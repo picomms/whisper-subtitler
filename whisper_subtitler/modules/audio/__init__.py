@@ -1,8 +1,8 @@
 """
 Audio processing module.
 
-This package handles audio extraction and preprocessing
-for the transcription and diarization processes.
+This package prepares audio from media files (audio or video)
+for transcription and diarization.
 """
 
 from .extractor import AudioExtractor

@@ -2,9 +2,10 @@
 Output formatters for different subtitle and transcript formats.
 
 This module provides formatters for various output formats,
-including TXT, SRT, VTT, and TTML.
+including JSON, TXT, SRT, VTT, and TTML.
 """
 
+import json
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from ..logger import get_logger
 class BaseFormatter(ABC):
     """Base class for all output formatters."""
 
-    def __init__(self, config):
+    def __init__(self, config: Any):
         """Initialize the formatter with the given configuration.
 
         Args:
@@ -36,6 +37,34 @@ class BaseFormatter(ABC):
             output_path: Path to save the output
         """
         pass
+
+
+class JSONFormatter(BaseFormatter):
+    """Structured JSON transcript formatter (primary output)."""
+
+    def generate(self, result: dict[str, Any], output_path: Path):
+        """Generate a JSON transcript with speaker-labeled segments.
+
+        Args:
+            result: Transcription result with speaker labels
+            output_path: Path to save the output
+        """
+        payload = {
+            "language": result.get("language"),
+            "text": result.get("text", ""),
+            "segments": [
+                {
+                    "start": float(segment["start"]),
+                    "end": float(segment["end"]),
+                    "text": segment["text"].strip(),
+                    "speaker": segment.get("speaker", "Unknown"),
+                }
+                for segment in result.get("segments", [])
+            ],
+        }
+        with output_path.open("w", encoding="utf-8") as json_file:
+            json.dump(payload, json_file, indent=2, ensure_ascii=False)
+            json_file.write("\n")
 
 
 class TXTFormatter(BaseFormatter):

@@ -1,28 +1,160 @@
 """
-Audio transcription module using Whisper.
+Audio transcription module using faster-whisper.
 
 This module handles the transcription of audio files using
-OpenAI's Whisper model with configurable parameters.
+Whisper models via CTranslate2 (faster-whisper), with CPU-first
+defaults and optional CUDA acceleration.
 """
 
+from __future__ import annotations
+
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import torch
-import whisper
+from faster_whisper import WhisperModel
 
 from ..logger import get_logger
-from .model_evaluator import ModelEvaluator
+
+# Models supported by faster-whisper. Plain "large" maps to large-v3.
+SUPPORTED_MODELS = (
+    "tiny",
+    "tiny.en",
+    "base",
+    "base.en",
+    "small",
+    "small.en",
+    "medium",
+    "medium.en",
+    "large",
+    "large-v1",
+    "large-v2",
+    "large-v3",
+    "turbo",
+    "distil-large-v3",
+)
+
+
+def resolve_model_name(model_size: str) -> str:
+    """Map CLI/config model aliases to faster-whisper model ids."""
+    if model_size == "large":
+        return "large-v3"
+    return model_size
+
+
+def resolve_device(config) -> str:
+    """Resolve inference device from config (cpu | cuda | auto / use_cuda)."""
+    device = getattr(config, "device", None)
+    if device in ("cpu", "cuda"):
+        if device == "cuda" and not torch.cuda.is_available():
+            return "cpu"
+        return device
+
+    # Legacy use_cuda / auto: prefer CUDA when available and not forced off
+    use_cuda = getattr(config, "use_cuda", True)
+    if use_cuda and torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
+def resolve_compute_type(config, device: str) -> str:
+    """Pick a compute type: explicit config, else best supported default for device.
+
+    CUDA prefers float16 when supported. When it is not (e.g. Pascal GTX 1080),
+    prefer int8 over float32 so large models fit in limited VRAM.
+    """
+    explicit = getattr(config, "compute_type", None)
+    preferred = {
+        "cuda": ["float16", "int8_float16", "int8", "int8_float32", "float32"],
+        "cpu": ["int8", "int8_float32", "float32", "int16"],
+    }.get(device, ["int8", "float32"])
+
+    supported: set[str] | None = None
+    try:
+        import ctranslate2 as ct2
+
+        supported = set(ct2.get_supported_compute_types(device))
+    except Exception:
+        supported = None
+
+    # #region agent log
+    try:
+        import json as _json
+        import time as _time
+
+        with open("/home/cappy/code/whisper-subtitler/.cursor/debug-c34c50.log", "a") as _f:
+            _f.write(
+                _json.dumps(
+                    {
+                        "sessionId": "c34c50",
+                        "runId": "post-fix",
+                        "hypothesisId": "C",
+                        "location": "transcriber.py:resolve_compute_type",
+                        "message": "compute type resolution",
+                        "data": {
+                            "device": device,
+                            "explicit": explicit,
+                            "supported": sorted(supported) if supported is not None else None,
+                            "chosen_preview": None,
+                        },
+                        "timestamp": int(_time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
+
+    def _first_supported() -> str:
+        if supported is None:
+            return preferred[0]
+        for candidate in preferred:
+            if candidate in supported:
+                return candidate
+        return next(iter(supported)) if supported else preferred[0]
+
+    if explicit:
+        if supported is not None and explicit not in supported:
+            fallback = _first_supported()
+            get_logger("transcribe").warning(
+                f"compute_type={explicit} is not supported on {device} "
+                f"(supported: {sorted(supported)}); using {fallback}"
+            )
+            return fallback
+        return explicit
+
+    chosen = _first_supported()
+    if supported is not None and preferred[0] not in supported and chosen != preferred[0]:
+        get_logger("transcribe").warning(
+            f"Default {preferred[0]} is not supported on {device}; using {chosen} "
+            f"(supported: {sorted(supported)})"
+        )
+    return chosen
+
+
+def _is_cuda_oom_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "out of memory" in msg or ("cuda" in msg and "memory" in msg)
+
+
+def should_log_progress(config: Any) -> bool:
+    """Show faster-whisper progress on interactive terminals or when verbose."""
+    if getattr(config, "verbose", False):
+        return True
+    return sys.stderr.isatty()
 
 
 class Transcriber:
-    """Audio transcription using Whisper models.
+    """Audio transcription using faster-whisper.
 
-    Handles loading and using Whisper models for
-    transcribing audio files with various configurations.
+    Loads Whisper models via CTranslate2 and returns the legacy result shape
+    so downstream diarization/formatters stay stable.
     """
 
-    def __init__(self, config):
+    def __init__(self, config: Any):
         """Initialize the transcriber with the given configuration.
 
         Args:
@@ -32,188 +164,164 @@ class Transcriber:
         self.model_size = config.model_size
         self.language = config.language
         self.logger = get_logger("transcribe")
-        self.auto_model_selection = config.auto_model_selection
-        self.model_selection_criteria = config.model_selection_criteria
-        self.optimize_for_audio = config.optimize_for_audio
 
-        # Determine device for inference
-        self.device = "cuda" if config.use_cuda and torch.cuda.is_available() else "cpu"
-        self.model = None
-        self.model_evaluator = None
+        requested_device = getattr(config, "device", None)
+        self.device = resolve_device(config)
+        if requested_device == "cuda" and self.device == "cpu":
+            self.logger.warning("CUDA was requested but is not available; falling back to CPU")
+        self.compute_type = resolve_compute_type(config, self.device)
+        self.model: WhisperModel | None = None
+        self._cuda_oom_fell_back = False
 
-        # Whisper configuration
-        self.transcription_options = {
+        self.transcription_options: dict[str, Any] = {
             "language": self.language,
-            "beam_size": config.beam_size,
-            "best_of": config.best_of,
-            "temperature": config.temperature,
-            "initial_prompt": config.initial_prompt,
+            "beam_size": getattr(config, "beam_size", 5),
+            "best_of": getattr(config, "best_of", 5),
+            "temperature": getattr(config, "temperature", 0.0),
+            "initial_prompt": getattr(config, "initial_prompt", None),
         }
-
-        # Filter None values
         self.transcription_options = {k: v for k, v in self.transcription_options.items() if v is not None}
 
-    def load_model(self) -> Any:
-        """Load the Whisper model.
+    def _fallback_to_cpu_after_oom(self) -> None:
+        """Drop the CUDA model and reload on CPU after an out-of-memory error."""
+        self.logger.warning(
+            f"CUDA out of memory with compute_type={self.compute_type}; falling back to CPU (int8)"
+        )
+        self.model = None
+        self.device = "cpu"
+        self.compute_type = "int8"
+        self._cuda_oom_fell_back = True
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        # #region agent log
+        try:
+            import json as _json
+
+            with open("/home/cappy/code/whisper-subtitler/.cursor/debug-c34c50.log", "a") as _f:
+                _f.write(
+                    _json.dumps(
+                        {
+                            "sessionId": "c34c50",
+                            "runId": "post-fix",
+                            "hypothesisId": "B",
+                            "location": "transcriber.py:_fallback_to_cpu_after_oom",
+                            "message": "fell back to CPU after OOM",
+                            "data": {"device": self.device, "compute_type": self.compute_type},
+                            "timestamp": int(time.time() * 1000),
+                        }
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # #endregion
+
+    def load_model(self) -> WhisperModel:
+        """Load the faster-whisper model.
 
         Returns:
-            Loaded Whisper model
+            Loaded WhisperModel
         """
         if self.model is None:
-            self.logger.info(f"Loading Whisper model: {self.model_size}")
-            self.model = whisper.load_model(self.model_size, device=self.device)
-
-            # Enable CUDA optimizations if available
-            if self.device == "cuda":
-                self.logger.debug("Enabling CUDA optimizations")
-                torch.backends.cudnn.benchmark = True
-                if hasattr(torch.backends, "cuda"):
-                    if hasattr(torch.backends.cuda, "matmul"):
-                        torch.backends.cuda.matmul.allow_tf32 = True
-
-                if hasattr(torch.backends, "cudnn"):
-                    torch.backends.cudnn.allow_tf32 = True
-
+            model_name = resolve_model_name(self.model_size)
+            self.logger.info(
+                f"Loading faster-whisper model: {model_name} (device={self.device}, compute_type={self.compute_type})"
+            )
+            started = time.perf_counter()
+            self.model = WhisperModel(
+                model_name,
+                device=self.device,
+                compute_type=self.compute_type,
+            )
+            elapsed = time.perf_counter() - started
+            self.logger.info(f"Model loaded ({elapsed:.1f}s)")
         return self.model
 
-    def _get_model_evaluator(self) -> ModelEvaluator:
-        """Get or create the model evaluator.
+    def _segments_to_result(self, segments: list[Any], info: Any) -> dict[str, Any]:
+        """Convert faster-whisper segments/info into the legacy result shape."""
+        result_segments: list[dict[str, Any]] = []
+        texts: list[str] = []
 
-        Returns:
-            ModelEvaluator instance
-        """
-        if self.model_evaluator is None:
-            self.model_evaluator = ModelEvaluator(self.config)
-        return self.model_evaluator
+        for i, segment in enumerate(segments):
+            text = segment.text.strip()
+            texts.append(text)
+            result_segments.append({
+                "id": getattr(segment, "id", i),
+                "start": float(segment.start),
+                "end": float(segment.end),
+                "text": text,
+                "speaker": None,
+            })
 
-    def find_optimal_model_size(self, audio_path: str, reference_text: str | None = None) -> str:
-        """Find the optimal model size for the given audio.
-
-        Args:
-            audio_path: Path to the audio file
-            reference_text: Optional reference text for WER calculation
-
-        Returns:
-            Optimal model size
-        """
-        evaluator = self._get_model_evaluator()
-
-        # If reference text is provided, use it for accuracy comparison
-        if reference_text:
-            return evaluator.find_optimal_model(audio_path, reference_text, self.model_selection_criteria)
-
-        # If no reference text, evaluate a sample of the audio with different models
-        # and choose based on the specified criteria (without WER)
-        results = evaluator.evaluate_models(audio_path, model_sizes=["tiny", "base", "medium"])
-
-        # Default to medium if evaluation fails
-        if not results["models"]:
-            return "medium"
-
-        # Choose based on criteria (without WER)
-        valid_models = {k: v for k, v in results["models"].items() if "error" not in v}
-
-        if self.model_selection_criteria == "speed":
-            # Sort by processing time (ascending)
-            sorted_models = sorted(valid_models.items(), key=lambda x: x[1]["processing_time"])
-            return sorted_models[0][0]
-        else:
-            # For accuracy or balanced without reference, use larger model
-            return "medium"
-
-    def _optimize_for_audio_type(self, audio_path: str) -> dict[str, Any]:
-        """Optimize transcription parameters based on audio characteristics.
-
-        Args:
-            audio_path: Path to the audio file
-
-        Returns:
-            Dictionary of optimized parameters
-        """
-        import librosa
-        import numpy as np
-
-        optimized_options = self.transcription_options.copy()
-
-        try:
-            # Load audio sample (first 30 seconds)
-            y, sr = librosa.load(audio_path, sr=None, duration=30)
-
-            # Check audio quality metrics
-            rms = np.sqrt(np.mean(y**2))
-            spectral_centroid = librosa.feature.spectral_centroid(y=y, sr=sr).mean()
-            spectral_bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr).mean()
-
-            # Detect low quality audio (noisy or low volume)
-            if rms < 0.01 or spectral_bandwidth > 4000:
-                self.logger.info("Detected noisy audio, adjusting parameters")
-                # For noisy audio, use lower temperature for more predictable output
-                optimized_options["temperature"] = 0.0
-                # Increase beam size for better accuracy
-                optimized_options["beam_size"] = 5
-
-            # Detect speech-heavy audio
-            non_silent = librosa.effects.split(y, top_db=30)
-            speech_ratio = sum(end - start for start, end in non_silent) / len(y)
-
-            if speech_ratio > 0.8:
-                self.logger.info("Detected continuous speech, adjusting parameters")
-                # For content-dense speech, increase best_of
-                optimized_options["best_of"] = max(5, optimized_options.get("best_of", 5))
-
-            return optimized_options
-
-        except Exception as e:
-            self.logger.warning(f"Error in audio optimization: {e}")
-            return self.transcription_options
+        return {
+            "text": " ".join(t for t in texts if t).strip(),
+            "segments": result_segments,
+            "language": getattr(info, "language", self.language),
+        }
 
     def transcribe(self, audio_path: str, reference_text: str | None = None) -> dict[str, Any]:
         """Transcribe the given audio file.
 
         Args:
             audio_path: Path to the audio file
-            reference_text: Optional reference text for model selection
+            reference_text: Unused; kept for call-site compatibility
 
         Returns:
-            Dictionary containing transcription results
+            Dictionary containing transcription results in the legacy-compatible shape
         """
-        # Verify audio file exists
+        del reference_text  # unused; retained for API compatibility
         audio_file = Path(audio_path)
         if not audio_file.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        # Select optimal model if enabled
-        if self.auto_model_selection:
-            self.logger.info("Auto model selection enabled")
-            self.model_size = self.find_optimal_model_size(audio_path, reference_text)
-            self.logger.info(f"Selected model: {self.model_size}")
-
-            # Clear existing model to load new one
-            self.model = None
-
-        # Ensure model is loaded
         model = self.load_model()
-
         self.logger.info(f"Transcribing: {audio_path}")
 
-        # Get transcription options
-        options = self.transcription_options.copy()
-
-        # Optimize for audio type if enabled
-        if self.optimize_for_audio:
-            self.logger.info("Optimizing parameters for audio type")
-            options = self._optimize_for_audio_type(audio_path)
-
-        # Transcribe with configured options
         try:
+            options = self.transcription_options.copy()
+            options["log_progress"] = should_log_progress(self.config)
             self.logger.debug(f"Transcription options: {options}")
-            result = model.transcribe(str(audio_path), **options)
+            # #region agent log
+            try:
+                import json as _json
 
-            # Initialize speaker field for each segment (will be filled by diarization)
-            for segment in result["segments"]:
-                segment["speaker"] = None
-
+                with open("/home/cappy/code/whisper-subtitler/.cursor/debug-c34c50.log", "a") as _f:
+                    _f.write(
+                        _json.dumps(
+                            {
+                                "sessionId": "c34c50",
+                                "runId": "post-fix",
+                                "hypothesisId": "A",
+                                "location": "transcriber.py:transcribe",
+                                "message": "starting transcribe",
+                                "data": {
+                                    "device": self.device,
+                                    "compute_type": self.compute_type,
+                                    "audio": str(audio_path),
+                                },
+                                "timestamp": int(time.time() * 1000),
+                            }
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+            # #endregion
+            segments_gen, info = model.transcribe(str(audio_path), **options)
+            segments = list(segments_gen)
+            result = self._segments_to_result(segments, info)
+            self.logger.info(
+                f"Detected language '{result.get('language')}' "
+                f"({getattr(info, 'language_probability', 0):.2f}), "
+                f"{len(result['segments'])} segments"
+            )
             return result
         except Exception as e:
+            if self.device == "cuda" and not self._cuda_oom_fell_back and _is_cuda_oom_error(e):
+                self.logger.error(f"Transcription error: {e!s}")
+                self._fallback_to_cpu_after_oom()
+                return self.transcribe(str(audio_path))
             self.logger.error(f"Transcription error: {e!s}")
             raise

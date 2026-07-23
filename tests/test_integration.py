@@ -11,8 +11,8 @@ from unittest.mock import patch
 import pytest
 
 # Import once implemented
-# from whisper_subtitler.application import Application
-# from whisper_subtitler.config import Config
+# from whisper_subtitler.modules.application import Application
+# from whisper_subtitler.modules.config import Config
 # from whisper_subtitler.cli import app
 
 

@@ -1,12 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "whisper-subtitler"
-version = "0.0.1"
-description = "LLM subtitle generator"
+dynamic = ["version"]
+description = "Automatic subtitles with faster-whisper and pyannote speaker diarization"
 authors = [{ name = "Dominic Capparelli", email = "dcapparelli@picomms.tv" }]
 readme = "README.md"
 license = { text = "MIT" }
 keywords = ['python']
-requires-python = ">=3.9,<4.0"
+requires-python = ">=3.11,<4.0"
 classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python",
@@ -18,14 +22,14 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "openai-whisper>=20240930",
-    "setuptools-rust>=1.11.1",
+    "faster-whisper>=1.1.0",
     "torch>=2.7.0",
     "tqdm>=4.67.1",
-    "pyannote.audio",
+    "pyannote-audio",
     "torchvision",
     "torchaudio",
-    "dotenv>=0.9.9",
+    "python-dotenv>=1.0.0",
+    "sentencepiece>=0.2.1",
     "jiwer>=3.0.3",
     "librosa>=0.10.1",
     "scipy>=1.12.0",
@@ -38,10 +42,14 @@ Homepage = "https://picommcapp.github.io/whisper-subtitler/"
 Repository = "https://github.com/picommcapp/whisper-subtitler"
 Documentation = "https://picommcapp.github.io/whisper-subtitler/"
 
+[project.scripts]
+whisper-subtitler = "whisper_subtitler.modules.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest>=7.2.0",
     "pre-commit>=2.20.0",
+    "tox>=4.0.0",
     "tox-uv>=1.11.3",
     "basedpyright",
     "ruff>=0.11.5",
@@ -50,18 +58,28 @@ dev = [
     "mkdocstrings[python]>=0.26.1",
 ]
 
-[tool.setuptools]
-py-modules = ["whisper_subtitler"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["whisper_subtitler*"]
 
-[tool.mypy]
-files = ["whisper_subtitler"]
-disallow_untyped_defs = true
-disallow_any_unimported = true
-no_implicit_optional = true
-check_untyped_defs = true
-warn_return_any = true
-warn_unused_ignores = true
-show_error_codes = true
+[tool.setuptools.dynamic]
+version = { attr = "whisper_subtitler.version.VERSION" }
+
+[tool.basedpyright]
+include = ["whisper_subtitler", "tests"]
+exclude = ["**/__pycache__", ".venv", "whisper_subtitler/subwhisper.py"]
+typeCheckingMode = "basic"
+reportArgumentType = false
+reportAssignmentType = false
+reportAttributeAccessIssue = false
+reportCallIssue = false
+reportGeneralTypeIssues = false
+reportIndexIssue = false
+reportMissingImports = false
+reportMissingTypeStubs = false
+reportOptionalCall = false
+reportOptionalMemberAccess = false
+reportReturnType = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -109,10 +127,23 @@ ignore = [
     "E501",
     # DoNotAssignLambda
     "E731",
+    # Existing codebase complexity and exception-style baseline
+    "C90",
+    "TRY",
+    "SIM",
+    "B904",
+    "C401",
+    "C403",
+    "PGH003",
+    "RUF012",
+    "S603",
+    "S607",
+    "RUF005",
+    "UP038",
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]
+"tests/*" = ["B007", "B008", "E722", "F841", "S101", "S105", "S314", "TRY003"]
 
 [tool.ruff.format]
 preview = true

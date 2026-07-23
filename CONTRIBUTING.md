@@ -30,6 +30,7 @@ Anything tagged with "enhancement" and "help wanted" is open to whoever wants to
 ## Write Documentation
 
 whisper-subtitler could always use more documentation, whether as part of the official docs, in docstrings, or even on the web in blog posts, articles, and such.
+Active docs live under `docs/` (see [Development](docs/development.md)); historical notes are in `docs/archive/`.
 
 ## Submit Feedback
 
@@ -45,7 +46,8 @@ If you are proposing a new feature:
 # Get Started!
 
 Ready to contribute? Here's how to set up `whisper-subtitler` for local development.
-Please note this documentation assumes you already have `uv` and `Git` installed and ready to go.
+Please note this documentation assumes you already have `uv`, `just`, and `Git` installed and ready to go.
+You also need **Python ≥ 3.11** and **FFmpeg** on your `PATH` for runtime tests that extract audio.
 
 1. Fork the `whisper-subtitler` repo on GitHub.
 
@@ -65,7 +67,7 @@ cd whisper-subtitler
 Then, install and activate the environment with:
 
 ```bash
-uv sync
+just sync
 ```
 
 4. Install pre-commit to run linters/formatters at commit time:
@@ -87,24 +89,25 @@ Now you can make your changes locally.
 7. When you're done making changes, check that your changes pass the formatting tests.
 
 ```bash
-make check
+just check
 ```
 
-Now, validate that all unit tests are passing:
+8. Validate that all unit tests are passing:
 
 ```bash
-make test
+just test
 ```
+
+Useful Just recipes: `sync`, `lock`, `lint`, `fmt`, `typecheck`, `check`, `test`, `docs`, `run`, `clean`. See [docs/development.md](docs/development.md).
 
 9. Before raising a pull request you should also run tox.
    This will run the tests across different versions of Python:
 
 ```bash
-tox
+uv run tox
 ```
 
 This requires you to have multiple versions of python installed.
-This step is also triggered in the CI/CD pipeline, so you could also choose to skip this step locally.
 
 10. Commit your changes and push your branch to GitHub:
 
@@ -123,4 +126,4 @@ Before you submit a pull request, check that it meets these guidelines:
 1. The pull request should include tests.
 
 2. If the pull request adds functionality, the docs should be updated.
-   Put your new functionality into a function with a docstring, and add the feature to the list in `README.md`.
+   Put your new functionality into a function with a docstring, and add the feature to the list in `README.md` / `docs/`.

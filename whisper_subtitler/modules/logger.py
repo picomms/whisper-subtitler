@@ -8,6 +8,7 @@ components of the application with configurable levels and outputs.
 import logging
 import os
 import sys
+from typing import Any
 
 
 class ColoredFormatter(logging.Formatter):
@@ -34,7 +35,7 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logging(config=None, level: str | None = None, log_file: str | None = None) -> logging.Logger:
+def setup_logging(config: Any | None = None, level: str | None = None, log_file: str | None = None) -> logging.Logger:
     """Set up logging with the specified configuration.
 
     Args:

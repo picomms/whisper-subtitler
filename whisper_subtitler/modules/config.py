@@ -28,37 +28,29 @@ class Config:
 
     def __init__(self):
         """Initialize configuration with default values."""
-        # Transcription settings
-        self.model_size: str = "base"  # tiny, base, small, medium, large
+        # Transcription settings (faster-whisper)
+        self.model_size: str = "large-v3"
         self.language: str | None = "en"  # Language code or None for auto-detection
-        # New Whisper model configuration
         self.beam_size: int = 5  # Beam search width
         self.best_of: int = 5  # Number of samples for beam search
         self.temperature: float = 0.0  # Temperature for sampling
         self.initial_prompt: str | None = None  # Initial prompt for transcription
-        self.auto_model_selection: bool = False  # Auto-select optimal model
-        self.model_selection_criteria: str = "balanced"  # accuracy, speed, balanced
-        self.optimize_for_audio: bool = False  # Optimize parameters for audio type
+        # Device: "auto" | "cpu" | "cuda" — CPU is first-class; CUDA optional
+        self.device: str = "auto"
+        self.compute_type: str | None = None  # None → int8 (cpu) / float16 (cuda)
 
-        # Diarization settings
-        self.num_speakers: int | None = None  # Number of speakers or None for auto
+        # Diarization settings (pyannote/speaker-diarization-3.1)
+        self.num_speakers: int | None = None  # Exact count, or None for auto/bounds
         self.huggingface_token: str | None = None
-        self.cluster_speakers: bool = False
-        self.optimize_num_speakers: bool = False
-        self.preprocess_audio: bool = False
         self.skip_diarization: bool = False  # Option to skip diarization completely
-        # New diarization settings
         self.min_speakers: int | None = None  # Minimum number of speakers to detect
         self.max_speakers: int | None = None  # Maximum number of speakers to detect
-        self.similarity_threshold: float = 0.85  # Threshold for speaker clustering
-        self.voice_activity_detection: bool = True  # Use voice activity detection
-        self.min_silence_duration: float = 0.3  # Minimum silence duration in seconds
 
         # Performance settings
         self.use_cuda: bool = True
 
-        # Output settings
-        self.output_formats: list[str] = ["txt", "srt", "vtt", "ttml"]
+        # Output settings (JSON is the primary default)
+        self.output_formats: list[str] = ["json"]
         self.ttml_title: str = "Transcription"
         self.ttml_language: str = "en-GB"
 
@@ -132,17 +124,6 @@ class Config:
                 logger.warning("Invalid WHISPER_TEMPERATURE value in environment, ignoring")
 
         self.initial_prompt = os.environ.get("WHISPER_INITIAL_PROMPT", self.initial_prompt)
-        self.auto_model_selection = os.environ.get("AUTO_MODEL_SELECTION", str(self.auto_model_selection)).lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        self.model_selection_criteria = os.environ.get("MODEL_SELECTION_CRITERIA", self.model_selection_criteria)
-        self.optimize_for_audio = os.environ.get("OPTIMIZE_FOR_AUDIO", str(self.optimize_for_audio)).lower() in (
-            "1",
-            "true",
-            "yes",
-        )
 
         # Diarization settings
         self.huggingface_token = os.environ.get("HUGGINGFACE_TOKEN", self.huggingface_token)
@@ -153,26 +134,12 @@ class Config:
             except ValueError:
                 logger.warning("Invalid NUM_SPEAKERS value in environment, ignoring")
 
-        self.cluster_speakers = os.environ.get("CLUSTER_SPEAKERS", str(self.cluster_speakers)).lower() in (
-            "1",
-            "true",
-            "yes",
-        )
-        self.optimize_num_speakers = os.environ.get(
-            "OPTIMIZE_NUM_SPEAKERS", str(self.optimize_num_speakers)
-        ).lower() in ("1", "true", "yes")
-        self.preprocess_audio = os.environ.get("PREPROCESS_AUDIO", str(self.preprocess_audio)).lower() in (
-            "1",
-            "true",
-            "yes",
-        )
         self.skip_diarization = os.environ.get("SKIP_DIARIZATION", str(self.skip_diarization)).lower() in (
             "1",
             "true",
             "yes",
         )
 
-        # New diarization settings
         if "MIN_SPEAKERS" in os.environ:
             try:
                 min_speakers = os.environ.get("MIN_SPEAKERS")
@@ -187,24 +154,15 @@ class Config:
             except ValueError:
                 logger.warning("Invalid MAX_SPEAKERS value in environment, ignoring")
 
-        if "SIMILARITY_THRESHOLD" in os.environ:
-            try:
-                self.similarity_threshold = float(os.environ.get("SIMILARITY_THRESHOLD", self.similarity_threshold))
-            except ValueError:
-                logger.warning("Invalid SIMILARITY_THRESHOLD value in environment, ignoring")
-
-        self.voice_activity_detection = os.environ.get(
-            "VOICE_ACTIVITY_DETECTION", str(self.voice_activity_detection)
-        ).lower() in ("1", "true", "yes")
-
-        if "MIN_SILENCE_DURATION" in os.environ:
-            try:
-                self.min_silence_duration = float(os.environ.get("MIN_SILENCE_DURATION", self.min_silence_duration))
-            except ValueError:
-                logger.warning("Invalid MIN_SILENCE_DURATION value in environment, ignoring")
-
         # Performance settings
+        if "WHISPER_DEVICE" in os.environ or "DEVICE" in os.environ:
+            self.device = (os.environ.get("WHISPER_DEVICE") or os.environ.get("DEVICE") or self.device).lower()
+        if "WHISPER_COMPUTE_TYPE" in os.environ or "COMPUTE_TYPE" in os.environ:
+            self.compute_type = os.environ.get("WHISPER_COMPUTE_TYPE") or os.environ.get("COMPUTE_TYPE")
         self.use_cuda = os.environ.get("USE_CUDA", str(self.use_cuda)).lower() in ("1", "true", "yes")
+        # Back-compat: USE_CUDA=false forces CPU unless WHISPER_DEVICE already set
+        if "USE_CUDA" in os.environ and not self.use_cuda and "WHISPER_DEVICE" not in os.environ:
+            self.device = "cpu"
 
         # Output settings
         if "OUTPUT_FORMATS" in os.environ:
@@ -342,17 +300,51 @@ class Config:
             logger.error(
                 "HUGGINGFACE_TOKEN environment variable not set. Please set it with your token from https://hf.co/settings/tokens"
             )
-            logger.error("Also make sure to accept the user conditions at https://hf.co/pyannote/speaker-diarization")
+            logger.error(
+                "Also make sure to accept the user conditions at https://hf.co/pyannote/speaker-diarization-3.1"
+            )
             logger.error("If you don't have a token, you can use --no-diarization to skip speaker diarization")
             raise ValueError("HUGGINGFACE_TOKEN is required for speaker diarization")
 
-        # Validate model size
-        valid_model_sizes = ["tiny", "base", "small", "medium", "large"]
+        if self.num_speakers is not None and (self.min_speakers is not None or self.max_speakers is not None):
+            logger.warning("num_speakers is set; min_speakers/max_speakers will be ignored")
+
+        if self.min_speakers is not None and self.max_speakers is not None and self.min_speakers > self.max_speakers:
+            raise ValueError(
+                f"min_speakers ({self.min_speakers}) cannot be greater than max_speakers ({self.max_speakers})"
+            )
+
+        # Validate model size (faster-whisper ids + "large" alias → large-v3)
+        valid_model_sizes = [
+            "tiny",
+            "tiny.en",
+            "base",
+            "base.en",
+            "small",
+            "small.en",
+            "medium",
+            "medium.en",
+            "large",
+            "large-v1",
+            "large-v2",
+            "large-v3",
+            "turbo",
+            "distil-large-v3",
+        ]
         if self.model_size not in valid_model_sizes:
             raise ValueError(f"Invalid model size: {self.model_size}. Must be one of {valid_model_sizes}")
 
+        if self.device not in ("auto", "cpu", "cuda"):
+            raise ValueError(f"Invalid device: {self.device}. Must be one of auto, cpu, cuda")
+
+        valid_compute_types = ["int8", "int8_float16", "int16", "float16", "float32"]
+        if self.compute_type is not None:
+            self.compute_type = self.compute_type.lower()
+            if self.compute_type not in valid_compute_types:
+                raise ValueError(f"Invalid compute type: {self.compute_type}. Must be one of {valid_compute_types}")
+
         # Validate output formats
-        valid_formats = ["txt", "srt", "vtt", "ttml"]
+        valid_formats = ["json", "txt", "srt", "vtt", "ttml"]
         for fmt in self.output_formats:
             if fmt not in valid_formats:
                 raise ValueError(f"Invalid output format: {fmt}. Must be one of {valid_formats}")

@@ -1,25 +1,26 @@
 """
 Audio extraction module.
 
-This module provides functionality to extract audio from
-video files for transcription and diarization.
+This module provides functionality to prepare audio from
+audio or video media files for transcription and diarization.
 """
 
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from ..logger import get_logger
 
 
 class AudioExtractor:
-    """Audio extraction from video files.
+    """Audio preparation from audio or video media files.
 
-    Handles extracting audio from video files using FFmpeg
-    with configurable parameters for sample rate and channels.
+    Uses FFmpeg to decode media and write PCM WAV with configurable
+    sample rate and channels (suitable for Whisper and pyannote).
     """
 
-    def __init__(self, config):
+    def __init__(self, config: Any):
         """Initialize the extractor with the given configuration.
 
         Args:
@@ -31,14 +32,14 @@ class AudioExtractor:
         self.channels = config.audio_channels
 
     def extract_audio(self, input_file: str | Path, output_file: str | Path | None = None) -> Path:
-        """Extract audio from a video file.
+        """Prepare audio from an audio or video media file.
 
         Args:
-            input_file: Path to the input video file
-            output_file: Optional path for the output audio file
+            input_file: Path to the input media file (e.g. mp3, wav, mp4)
+            output_file: Optional path for the output WAV file
 
         Returns:
-            Path to the extracted audio file
+            Path to the prepared WAV audio file
 
         Raises:
             FileNotFoundError: If the input file doesn't exist
@@ -61,7 +62,13 @@ class AudioExtractor:
         # Create output directory if it doesn't exist
         os.makedirs(output_path.parent, exist_ok=True)
 
-        self.logger.info(f"Extracting audio to: {output_path}")
+        # Avoid FFmpeg reading and writing the same path in-place
+        same_path = input_path == output_path
+        ffmpeg_output = output_path
+        if same_path:
+            ffmpeg_output = output_path.with_name(f"{output_path.stem}.converted{output_path.suffix}")
+
+        self.logger.info(f"Preparing audio from {input_path} → {output_path}")
 
         try:
             # Build FFmpeg command
@@ -70,25 +77,28 @@ class AudioExtractor:
                 "-y",  # Overwrite output file if it exists
                 "-i",
                 str(input_path),
-                "-vn",  # Disable video
+                "-vn",  # Disable video (no-op for audio-only inputs)
                 "-acodec",
                 "pcm_s16le",  # PCM 16-bit output
                 "-ar",
                 self.sample_rate,  # Sample rate
                 "-ac",
                 self.channels,  # Number of channels
-                str(output_path),
+                str(ffmpeg_output),
             ]
 
             # Run FFmpeg command
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+            if same_path:
+                os.replace(ffmpeg_output, output_path)
 
             return output_path
 
         except subprocess.CalledProcessError as e:
             error_message = e.stderr if hasattr(e, "stderr") else str(e)
-            self.logger.error(f"Failed to extract audio: {error_message}")
+            self.logger.error(f"Failed to prepare audio: {error_message}")
             raise RuntimeError(f"Audio extraction failed: {error_message}")
         except Exception as e:
-            self.logger.error(f"Unexpected error during audio extraction: {e!s}")
+            self.logger.error(f"Unexpected error during audio preparation: {e!s}")
             raise

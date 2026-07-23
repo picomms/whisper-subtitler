@@ -15,10 +15,10 @@ class OutputFormatter:
     """Output formatter for transcription results.
 
     Manages the generation of various output formats such as
-    TXT, SRT, VTT, and TTML from transcription results.
+    JSON, TXT, SRT, VTT, and TTML from transcription results.
     """
 
-    def __init__(self, config):
+    def __init__(self, config: Any):
         """Initialize the formatter with the given configuration.
 
         Args:
@@ -36,7 +36,10 @@ class OutputFormatter:
     def _initialize_formatters(self):
         """Initialize the formatters for each supported output format."""
 
-        from .formats import SRTFormatter, TTMLFormatter, TXTFormatter, VTTFormatter
+        from .formats import JSONFormatter, SRTFormatter, TTMLFormatter, TXTFormatter, VTTFormatter
+
+        if "json" in self.output_formats:
+            self.formatters["json"] = JSONFormatter(self.config)
 
         if "txt" in self.output_formats:
             self.formatters["txt"] = TXTFormatter(self.config)

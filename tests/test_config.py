@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-# Import this once implemented
-# from whisper_subtitler.config import Config
+from whisper_subtitler.modules.config import Config
 
 
 # Using a placeholder for now until Config class is implemented
@@ -17,19 +16,19 @@ class MockConfigForTesting:
     def __init__(self):
         self.model_size = "medium"
         self.language = "en"
-        self.output_formats = ["txt", "srt", "vtt", "ttml"]
+        self.output_formats = ["json"]
         self.num_speakers = None
         self.huggingface_token = None
         self.use_cuda = True
         self.verbose = False
         self.input_file = None
         self.output_dir = None
-        self.preprocess_audio = False
-        self.cluster_speakers = False
-        self.optimize_num_speakers = False
         self.force_overwrite = False
         self.log_level = "INFO"
         self.log_file = None
+        self.skip_diarization = False
+        self.min_speakers = None
+        self.max_speakers = None
 
     def load_from_env(self, env_file=None):
         self.huggingface_token = os.environ.get("HUGGINGFACE_TOKEN")
@@ -69,17 +68,17 @@ class TestConfig:
 
         assert config.model_size == "medium"
         assert config.language == "en"
-        assert config.output_formats == ["txt", "srt", "vtt", "ttml"]
+        assert config.output_formats == ["json"]
         assert config.num_speakers is None
         assert config.huggingface_token is None
         assert config.use_cuda is True
         assert config.verbose is False
-        assert config.preprocess_audio is False
-        assert config.cluster_speakers is False
-        assert config.optimize_num_speakers is False
         assert config.force_overwrite is False
         assert config.log_level == "INFO"
         assert config.log_file is None
+        assert config.skip_diarization is False
+        assert config.min_speakers is None
+        assert config.max_speakers is None
 
     def test_env_loading(self, mock_env_variables):
         """Test loading configuration from environment variables."""
@@ -213,7 +212,7 @@ class TestConfig:
         original_validate = config.validate
 
         def mock_validate():
-            if not set(config.output_formats).issubset({"txt", "srt", "vtt", "ttml"}):
+            if not set(config.output_formats).issubset({"json", "txt", "srt", "vtt", "ttml"}):
                 raise ValueError("Invalid output format")
             return original_validate(self)
 
@@ -226,3 +225,97 @@ class TestConfig:
 
         # Restore original validate method
         config.validate = original_validate
+
+
+class TestRealConfig:
+    """Regression tests for the real faster-whisper configuration plumbing."""
+
+    def _valid_config(self, tmp_path):
+        config = Config()
+        config.input_file = str(tmp_path / "audio.mp3")
+        config.skip_diarization = True
+        return config
+
+    def test_env_loads_model_device_and_compute_type(self, monkeypatch):
+        monkeypatch.setenv("WHISPER_MODEL_SIZE", "large-v3")
+        monkeypatch.setenv("WHISPER_DEVICE", "cpu")
+        monkeypatch.setenv("WHISPER_COMPUTE_TYPE", "int8")
+
+        config = Config().load_from_env()
+
+        assert config.model_size == "large-v3"
+        assert config.device == "cpu"
+        assert config.compute_type == "int8"
+
+    def test_use_cuda_false_forces_cpu_when_device_not_set(self, monkeypatch, tmp_path):
+        # Avoid the project .env injecting WHISPER_DEVICE=auto via load_dotenv()
+        monkeypatch.delenv("WHISPER_DEVICE", raising=False)
+        monkeypatch.delenv("DEVICE", raising=False)
+        monkeypatch.setenv("USE_CUDA", "false")
+        empty_env = tmp_path / "empty.env"
+        empty_env.write_text("")
+
+        config = Config().load_from_env(env_file=str(empty_env))
+
+        assert config.device == "cpu"
+        assert config.use_cuda is False
+
+    def test_validate_rejects_invalid_model(self, tmp_path):
+        config = self._valid_config(tmp_path)
+        config.model_size = "not-a-model"
+
+        with pytest.raises(ValueError, match="Invalid model size"):
+            config.validate()
+
+    def test_validate_rejects_invalid_device(self, tmp_path):
+        config = self._valid_config(tmp_path)
+        config.device = "metal"
+
+        with pytest.raises(ValueError, match="Invalid device"):
+            config.validate()
+
+    def test_validate_rejects_invalid_compute_type(self, tmp_path):
+        config = self._valid_config(tmp_path)
+        config.compute_type = "bfloat16"
+
+        with pytest.raises(ValueError, match="Invalid compute type"):
+            config.validate()
+
+    def test_validate_allows_faster_whisper_compute_type(self, tmp_path):
+        config = self._valid_config(tmp_path)
+        config.compute_type = "float32"
+
+        config.validate()
+
+        assert config.compute_type == "float32"
+
+    def test_default_output_formats_is_json(self):
+        config = Config()
+        assert config.output_formats == ["json"]
+
+    def test_validate_allows_json_format(self, tmp_path):
+        config = self._valid_config(tmp_path)
+        config.output_formats = ["json"]
+        config.validate()
+        assert config.output_formats == ["json"]
+
+    def test_validate_rejects_min_greater_than_max_speakers(self, tmp_path):
+        config = self._valid_config(tmp_path)
+        config.min_speakers = 4
+        config.max_speakers = 2
+
+        with pytest.raises(ValueError, match="min_speakers"):
+            config.validate()
+
+    def test_validate_warns_when_num_speakers_and_bounds_set(self, tmp_path, caplog):
+        import logging
+
+        config = self._valid_config(tmp_path)
+        config.num_speakers = 2
+        config.min_speakers = 1
+        config.max_speakers = 4
+
+        with caplog.at_level(logging.WARNING):
+            config.validate()
+
+        assert "num_speakers is set; min_speakers/max_speakers will be ignored" in caplog.text

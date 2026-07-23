@@ -6,10 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from whisper_subtitler.modules.application import Application
+from whisper_subtitler.modules.diarisation.diarizer import Diarizer
+
 # Import once implemented
-# from whisper_subtitler.application import Application
+# from whisper_subtitler.modules.application import Application
 # from whisper_subtitler.modules.transcribe import Transcriber
-# from whisper_subtitler.modules.diarise import Diarizer
+# from whisper_subtitler.modules.diarisation import Diarizer
 # from whisper_subtitler.modules.output import OutputFormatter
 
 
@@ -29,9 +32,163 @@ class TestApplication:
         assert mock_config.model_size == "tiny"
         assert True
 
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Diarizer")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_passes_diarized_speakers_to_formatter(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_diarizer,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
+        sample_video_file,
+    ):
+        """Regression: assigned diarization labels must reach output generation."""
+        mock_config.input_file = str(sample_video_file)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = False
+
+        transcription = {
+            "text": "This is a test transcription.",
+            "segments": [
+                {"id": 0, "start": 0.0, "end": 2.0, "text": "This is a test", "speaker": None},
+                {"id": 1, "start": 2.5, "end": 4.0, "text": "transcription.", "speaker": None},
+            ],
+        }
+        speaker_segments = [
+            {"start": 0.0, "end": 2.2, "speaker": "SPEAKER_01"},
+            {"start": 2.3, "end": 4.1, "speaker": "SPEAKER_02"},
+        ]
+
+        mock_transcriber.return_value.transcribe.return_value = transcription
+        mock_diarizer_instance = mock_diarizer.return_value
+        mock_diarizer_instance.diarize.return_value = speaker_segments
+        real_diarizer = Diarizer(mock_config)
+        mock_diarizer_instance.assign_speakers_to_segments.side_effect = real_diarizer.assign_speakers_to_segments
+        mock_output_formatter.return_value.generate_outputs.return_value = {"srt": temp_output_dir / "test_video.srt"}
+
+        app = Application(mock_config)
+        batch = app.process()
+
+        mock_audio_extractor.return_value.extract_audio.assert_called_once()
+        mock_diarizer_instance.initialize_pipeline.assert_called_once()
+        mock_diarizer_instance.diarize.assert_called_once_with(str(temp_output_dir / "test_video.wav"))
+        mock_output_formatter.return_value.generate_outputs.assert_called_once()
+        output_data = mock_output_formatter.return_value.generate_outputs.call_args[0][0]
+
+        assert batch["failures"] == {}
+        assert batch["results"] == {str(sample_video_file): {"srt": temp_output_dir / "test_video.srt"}}
+        assert output_data["segments"][0]["speaker"] == "SPEAKER_01"
+        assert output_data["segments"][1]["speaker"] == "SPEAKER_02"
+        assert transcription["segments"][0]["speaker"] is None
+
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_passes_default_speaker_when_diarization_skipped(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
+        sample_video_file,
+    ):
+        """Regression: --no-diarization still sends labeled segments to formatters."""
+        mock_config.input_file = str(sample_video_file)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+
+        mock_transcriber.return_value.transcribe.return_value = {
+            "text": "This is a test transcription.",
+            "segments": [
+                {"id": 0, "start": 0.0, "end": 2.0, "text": "This is a test", "speaker": None},
+                {"id": 1, "start": 2.5, "end": 4.0, "text": "transcription.", "speaker": None},
+            ],
+        }
+        mock_output_formatter.return_value.generate_outputs.return_value = {"srt": temp_output_dir / "test_video.srt"}
+
+        app = Application(mock_config)
+        batch = app.process()
+
+        mock_audio_extractor.return_value.extract_audio.assert_called_once()
+        mock_output_formatter.return_value.generate_outputs.assert_called_once()
+        output_data = mock_output_formatter.return_value.generate_outputs.call_args[0][0]
+
+        assert batch["failures"] == {}
+        assert batch["results"] == {str(sample_video_file): {"srt": temp_output_dir / "test_video.srt"}}
+        assert [segment["speaker"] for segment in output_data["segments"]] == ["Speaker", "Speaker"]
+
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_extracts_mp3_to_wav(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
+    ):
+        """MP3 inputs are passed through to AudioExtractor targeting sibling WAV."""
+        mp3_path = temp_output_dir / "talk.mp3"
+        mp3_path.write_bytes(b"fake-mp3")
+        mock_config.input_file = str(mp3_path)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+        mock_config.force_overwrite = False
+
+        mock_transcriber.return_value.transcribe.return_value = {
+            "text": "hi",
+            "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi", "speaker": None}],
+        }
+        mock_output_formatter.return_value.generate_outputs.return_value = {"json": temp_output_dir / "talk.json"}
+
+        Application(mock_config).process()
+
+        mock_audio_extractor.return_value.extract_audio.assert_called_once_with(
+            input_file=str(mp3_path),
+            output_file=str(temp_output_dir / "talk.wav"),
+        )
+
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_reconverts_same_path_wav(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
+    ):
+        """WAV input that equals the target path always triggers conversion."""
+        wav_path = temp_output_dir / "meeting.wav"
+        wav_path.write_bytes(b"existing")
+        mock_config.input_file = str(wav_path)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+        mock_config.force_overwrite = False
+
+        mock_transcriber.return_value.transcribe.return_value = {
+            "text": "hi",
+            "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi", "speaker": None}],
+        }
+        mock_output_formatter.return_value.generate_outputs.return_value = {"json": temp_output_dir / "meeting.json"}
+
+        Application(mock_config).process()
+
+        mock_audio_extractor.return_value.extract_audio.assert_called_once_with(
+            input_file=str(wav_path),
+            output_file=str(wav_path),
+        )
+
     @pytest.mark.skip("Requires actual implementation")
     @patch("whisper_subtitler.modules.transcribe.Transcriber")
-    @patch("whisper_subtitler.modules.diarise.Diarizer")
+    @patch("whisper_subtitler.modules.diarisation.Diarizer")
     @patch("whisper_subtitler.modules.output.OutputFormatter")
     def test_initialize_components(self, mock_output_formatter, mock_diarizer, mock_transcriber, mock_config):
         """Test initializing the application components."""
@@ -63,7 +220,7 @@ class TestApplication:
 
     @pytest.mark.skip("Requires actual implementation")
     @patch("whisper_subtitler.modules.transcribe.Transcriber")
-    @patch("whisper_subtitler.modules.diarise.Diarizer")
+    @patch("whisper_subtitler.modules.diarisation.Diarizer")
     @patch("whisper_subtitler.modules.output.OutputFormatter")
     @patch("subprocess.run")
     def test_process_with_audio_extraction(
@@ -128,7 +285,7 @@ class TestApplication:
 
     @pytest.mark.skip("Requires actual implementation")
     @patch("whisper_subtitler.modules.transcribe.Transcriber")
-    @patch("whisper_subtitler.modules.diarise.Diarizer")
+    @patch("whisper_subtitler.modules.diarisation.Diarizer")
     @patch("whisper_subtitler.modules.output.OutputFormatter")
     def test_process_with_audio_file(
         self, mock_output_formatter, mock_diarizer, mock_transcriber, mock_config, sample_audio_file
@@ -175,7 +332,7 @@ class TestApplication:
 
     @pytest.mark.skip("Requires actual implementation")
     @patch("whisper_subtitler.modules.transcribe.Transcriber")
-    @patch("whisper_subtitler.modules.diarise.Diarizer")
+    @patch("whisper_subtitler.modules.diarisation.Diarizer")
     @patch("whisper_subtitler.modules.output.OutputFormatter")
     def test_speaker_assignment(self, mock_output_formatter, mock_diarizer, mock_transcriber, mock_config):
         """Test assigning speakers to transcription segments."""
@@ -222,7 +379,7 @@ class TestApplication:
 
     @pytest.mark.skip("Requires actual implementation")
     @patch("whisper_subtitler.modules.transcribe.Transcriber")
-    @patch("whisper_subtitler.modules.diarise.Diarizer")
+    @patch("whisper_subtitler.modules.diarisation.Diarizer")
     @patch("whisper_subtitler.modules.output.OutputFormatter")
     @patch("subprocess.run", side_effect=Exception("ffmpeg error"))
     def test_audio_extraction_error(
@@ -251,52 +408,187 @@ class TestApplication:
         # For now, just ensure the test runs
         assert True
 
-    @pytest.mark.skip("Requires actual implementation")
-    @patch("whisper_subtitler.modules.transcribe.Transcriber")
-    @patch("whisper_subtitler.modules.diarise.Diarizer")
-    @patch("whisper_subtitler.modules.output.OutputFormatter")
-    def test_multiple_input_files(
-        self, mock_output_formatter, mock_diarizer, mock_transcriber, mock_config, temp_output_dir
+    def test_resolve_input_files_directory_filters_and_sorts(self, temp_output_dir):
+        """Directory expansion is top-level, media-only, and sorted by name."""
+        from whisper_subtitler.modules.application import resolve_input_files
+
+        (temp_output_dir / "b.mp4").touch()
+        (temp_output_dir / "a.mp3").touch()
+        (temp_output_dir / "notes.txt").touch()
+        (temp_output_dir / "nested").mkdir()
+        (temp_output_dir / "nested" / "c.mp3").touch()
+
+        files = resolve_input_files(temp_output_dir)
+        assert [p.name for p in files] == ["a.mp3", "b.mp4"]
+
+    def test_resolve_input_files_empty_directory_raises(self, temp_output_dir):
+        from whisper_subtitler.modules.application import resolve_input_files
+
+        (temp_output_dir / "readme.txt").touch()
+        with pytest.raises(ValueError, match="No media files found"):
+            resolve_input_files(temp_output_dir)
+
+    def test_resolve_input_files_missing_raises(self, temp_output_dir):
+        from whisper_subtitler.modules.application import resolve_input_files
+
+        with pytest.raises(FileNotFoundError):
+            resolve_input_files(temp_output_dir / "missing.mp3")
+
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_directory_sequential_order(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
     ):
-        """Test processing multiple input files."""
-        # Setup mocks
-        mock_transcriber_instance = MagicMock()
-        mock_diarizer_instance = MagicMock()
-        mock_formatter_instance = MagicMock()
+        """Directory batch processes media files in sorted order on one Application."""
+        (temp_output_dir / "b.mp4").write_bytes(b"mp4")
+        (temp_output_dir / "a.mp3").write_bytes(b"mp3")
+        (temp_output_dir / "skip.txt").write_text("ignore")
+        nested = temp_output_dir / "subdir"
+        nested.mkdir()
+        (nested / "c.mp3").write_bytes(b"nested")
 
-        mock_transcriber.return_value = mock_transcriber_instance
-        mock_diarizer.return_value = mock_diarizer_instance
-        mock_output_formatter.return_value = mock_formatter_instance
+        mock_config.input_file = str(temp_output_dir)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
 
-        # Create test files
-        test_files = [
-            temp_output_dir / "test1.wav",
-            temp_output_dir / "test2.wav",
+        mock_transcriber.return_value.transcribe.return_value = {
+            "text": "hi",
+            "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi", "speaker": None}],
+        }
+
+        def fake_outputs(transcription, base_name):
+            return {"json": temp_output_dir / f"{base_name}.json"}
+
+        mock_output_formatter.return_value.generate_outputs.side_effect = fake_outputs
+
+        app = Application(mock_config)
+        batch = app.process()
+
+        assert batch["failures"] == {}
+        assert list(batch["results"].keys()) == [
+            str(temp_output_dir / "a.mp3"),
+            str(temp_output_dir / "b.mp4"),
         ]
-        for file in test_files:
-            file.touch()
+        assert mock_transcriber.return_value.transcribe.call_count == 2
+        # Same Application instance keeps components (models) warm
+        assert mock_audio_extractor.call_count == 1
+        assert mock_transcriber.call_count == 1
 
-        # Once implemented, use the actual Application
-        # app = Application(mock_config)
-        # app.initialize()
+    @patch("whisper_subtitler.modules.application.sys.stderr")
+    @patch("whisper_subtitler.modules.application.tqdm")
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_multi_file_uses_tqdm(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_tqdm,
+        mock_stderr,
+        mock_config,
+        temp_output_dir,
+    ):
+        """Directory batches wrap the file loop in tqdm when stderr is a TTY."""
+        (temp_output_dir / "a.mp3").write_bytes(b"mp3")
+        (temp_output_dir / "b.mp4").write_bytes(b"mp4")
+        mock_config.input_file = str(temp_output_dir)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+        mock_stderr.isatty.return_value = True
 
-        # # Process each file
-        # for file in test_files:
-        #     app.process(str(file))
+        files = [temp_output_dir / "a.mp3", temp_output_dir / "b.mp4"]
+        mock_tqdm.side_effect = lambda iterable, **kwargs: iterable
 
-        # # Check that each file was processed
-        # assert mock_transcriber_instance.transcribe.call_count == len(test_files)
-        # assert mock_diarizer_instance.diarize.call_count == len(test_files)
-        # assert mock_formatter_instance.generate_outputs.call_count == len(test_files)
+        mock_transcriber.return_value.transcribe.return_value = {
+            "text": "hi",
+            "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi", "speaker": None}],
+        }
+        mock_output_formatter.return_value.generate_outputs.return_value = {"json": "out.json"}
 
-        # For now, ensure the test files were created
-        for file in test_files:
-            assert file.exists()
-        assert True
+        Application(mock_config).process()
+
+        mock_tqdm.assert_called_once()
+        call_kwargs = mock_tqdm.call_args[1]
+        assert call_kwargs["desc"] == "Files"
+        assert call_kwargs["unit"] == "file"
+        assert call_kwargs["disable"] is False
+        assert list(mock_tqdm.call_args[0][0]) == files
+
+    @patch("whisper_subtitler.modules.application.tqdm")
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_single_file_skips_tqdm(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_tqdm,
+        mock_config,
+        temp_output_dir,
+        sample_video_file,
+    ):
+        """Single-file runs do not wrap tqdm around the file loop."""
+        mock_config.input_file = str(sample_video_file)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+        mock_transcriber.return_value.transcribe.return_value = {
+            "text": "hi",
+            "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi", "speaker": None}],
+        }
+        mock_output_formatter.return_value.generate_outputs.return_value = {"json": "out.json"}
+
+        Application(mock_config).process()
+
+        mock_tqdm.assert_not_called()
+
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_continues_after_file_failure(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
+    ):
+        """One failed file is recorded; remaining files still process."""
+        first = temp_output_dir / "a.mp3"
+        second = temp_output_dir / "b.mp4"
+        first.write_bytes(b"mp3")
+        second.write_bytes(b"mp4")
+
+        mock_config.input_file = str(temp_output_dir)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+
+        mock_transcriber.return_value.transcribe.side_effect = [
+            RuntimeError("boom"),
+            {
+                "text": "ok",
+                "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "ok", "speaker": None}],
+            },
+        ]
+        mock_output_formatter.return_value.generate_outputs.return_value = {"json": temp_output_dir / "b.json"}
+
+        batch = Application(mock_config).process()
+
+        assert str(first) in batch["failures"]
+        assert "boom" in batch["failures"][str(first)]
+        assert str(second) in batch["results"]
+        assert mock_transcriber.return_value.transcribe.call_count == 2
 
     @pytest.mark.skip("Requires actual implementation")
     @patch("whisper_subtitler.modules.transcribe.Transcriber")
-    @patch("whisper_subtitler.modules.diarise.Diarizer")
+    @patch("whisper_subtitler.modules.diarisation.Diarizer")
     @patch("whisper_subtitler.modules.output.OutputFormatter")
     def test_no_speakers_detected(
         self, mock_output_formatter, mock_diarizer, mock_transcriber, mock_config, sample_audio_file

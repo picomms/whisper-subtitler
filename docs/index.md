@@ -1,70 +1,35 @@
-# whisper-subtitler Documentation
+# whisper-subtitler
 
-Welcome to the official documentation for whisper-subtitler, an automatic subtitle generator with speaker identification.
+Automatic subtitle generation with speaker identification from audio or video.
 
-## Documentation Index
+- **Input:** audio or video via FFmpeg (e.g. `mp3`, `wav`, `m4a`, `flac`, `mp4`, `mkv`)
+- **Transcription:** [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (default model `large-v3`)
+- **Diarization:** [pyannote/speaker-diarization-3.1](https://hf.co/pyannote/speaker-diarization-3.1)
+- **Primary output:** JSON (TXT, SRT, VTT, and TTML available on request)
+- **Hardware:** CPU-first; CUDA optional
 
-### User Documentation
+## Documentation
 
-- [Installation Guide](installation-guide.md) - How to install and set up whisper-subtitler
-- [User Guide](user-guide.md) - Comprehensive guide to using whisper-subtitler
-- [Usage Examples](usage-examples.md) - Common usage patterns and examples
-- [FAQ](faq.md) - Frequently asked questions and troubleshooting
+- [Installation](installation.md) — Python, FFmpeg, uv, HuggingFace token
+- [Usage](usage.md) — CLI examples, formats, environment variables
+- [FAQ](faq.md) — common issues and troubleshooting
+- [Development](development.md) — Just/uv workflow and package layout
+- [Modules](modules.md) — API reference (mkdocstrings)
 
-### Developer Documentation
-
-- [Development Guide](development.md) - Overview of the architecture and development workflow
-- [API Reference](api-reference.md) - Detailed reference of classes, methods, and data structures
-
-## Quick Start
-
-### Installation
+## Quick start
 
 ```bash
-# Clone the repository
-git clone https://github.com/picommcapp/whisper-subtitler.git
-cd whisper-subtitler
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Create .env file
+# Install
+uv sync --all-groups
 cp .env.sample .env
-# Then edit .env with your HuggingFace token
+# Edit .env: set HUGGINGFACE_TOKEN and accept the 3.1 model terms
+
+# Transcribe (writes JSON by default)
+uv run whisper-subtitler transcribe path/to/video.mp4
+uv run whisper-subtitler transcribe path/to/talk.mp3
+
+# Or via Just
+just run transcribe path/to/video.mp4
 ```
 
-### Basic Usage
-
-```bash
-# Transcribe a video with speaker identification
-python run.py transcribe video.mp4
-
-# Transcribe without speaker identification
-python run.py transcribe video.mp4 --no-diarization
-
-# Use a specific Whisper model
-python run.py transcribe video.mp4 -m medium
-
-# Specify output directory
-python run.py transcribe video.mp4 -o output_dir
-```
-
-See the [User Guide](user-guide.md) for detailed instructions.
-
-## Features
-
-- **High-quality transcription** using OpenAI's Whisper
-- **Speaker identification** using Pyannote.audio
-- **Multiple output formats**: TXT, SRT, VTT, TTML
-- **GPU acceleration** for faster processing
-- **Configurable** through command-line options or environment variables
-- **Advanced diarization options** for improved speaker identification
-- **Support for 100+ languages**
-
-## Contributing
-
-Contributions are welcome! See the [Development Guide](development.md) for information on how to contribute to the project.
-
-## License
-
-whisper-subtitler is released under the [MIT License](https://github.com/picommcapp/whisper-subtitler/blob/main/LICENSE).
+See [Installation](installation.md) for prerequisites and [Usage](usage.md) for more examples.

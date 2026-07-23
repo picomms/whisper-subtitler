@@ -1,99 +1,82 @@
-# Development Guide for whisper-subtitler
+# Development
 
-This guide provides an overview of the whisper-subtitler architecture and module structure for developers.
+## Requirements
 
-## Architectural Overview
+- Python ≥ 3.11
+- [uv](https://docs.astral.sh/uv/)
+- [just](https://github.com/casey/just)
+- FFmpeg (for runtime audio extraction)
 
-whisper-subtitler uses a modular component-based architecture that separates concerns and promotes maintainability:
+There is no pip requirements file or Makefile. Dependencies live in `pyproject.toml` / `uv.lock`; recipes live in the `Justfile`.
 
-```
-whisper-subtitler/
-├── modules/
-│   ├── audio/          # Audio extraction from video files
-│   ├── config.py       # Configuration management
-│   ├── diarisation/    # Speaker identification
-│   ├── logger.py       # Logging utilities
-│   ├── output/         # Output format generators
-│   ├── transcribe/     # Whisper transcription
-│   └── cli.py          # Command-line interface
-└── main.py             # Application entry point
-```
-
-## Core Components
-
-### 1. Configuration (config.py)
-
-Manages configuration from multiple sources:
-- Environment variables (.env files)
-- Command-line arguments
-- Configuration files
-
-### 2. Audio Extraction (audio/extractor.py)
-
-Extracts audio from video files using FFmpeg with configurable settings for sample rate and channels.
-
-### 3. Transcription (transcribe/transcriber.py)
-
-Handles speech-to-text conversion using Whisper with configurable model sizes and language settings.
-
-### 4. Speaker Diarization (diarisation/diarizer.py)
-
-Identifies different speakers in the audio using Pyannote.audio with support for:
-- Known speaker count
-- Speaker clustering
-- CUDA acceleration
-
-### 5. Output Formatting (output/*.py)
-
-Converts transcription results into various subtitle formats:
-- Plain text (TXT)
-- SubRip Subtitle (SRT)
-- WebVTT (VTT)
-- Timed Text Markup Language (TTML)
-
-### 6. Logging (logger.py)
-
-Provides configurable logging capabilities with support for file output and different log levels.
-
-### 7. Command Line Interface (cli.py)
-
-Provides a user-friendly interface using argparse with extensive command-line options.
-
-## Application Flow
-
-1. Parse command-line arguments
-2. Load configuration from .env and config files
-3. Extract audio from video file
-4. Transcribe audio using Whisper
-5. Identify speakers using Pyannote (if enabled)
-6. Combine transcription and speaker information
-7. Generate output files in requested formats
-
-## Adding New Features
-
-### Adding a New Output Format
-
-1. Create a new formatter class in `modules/output/formats.py`
-2. Register the formatter in `modules/output/formatter.py`
-3. Add the format to the CLI options in `modules/cli.py`
-
-### Adding Configuration Options
-
-1. Add default value in the `Config` class in `modules/config.py`
-2. Add environment variable loading in `load_from_env`
-3. Add CLI argument in `modules/cli.py`
-
-## Testing
-
-Run the application with various settings to ensure it works as expected:
+## Setup
 
 ```bash
-# Basic test
-python run.py transcribe .local/test1.mp4 --force
+just sync          # uv sync --all-groups
+uv run pre-commit install
+```
 
-# Test with no diarization
-python run.py transcribe .local/test1.mp4 --no-diarization --force
+## Package layout
 
-# Test with custom model
-python run.py transcribe .local/test1.mp4 -m small --force
-``` 
+```text
+whisper_subtitler/
+  main.py
+  version.py
+  modules/
+    application.py
+    cli.py
+    config.py
+    audio/
+    diarisation/
+    output/
+    transcribe/
+tests/
+docs/
+Justfile
+pyproject.toml
+```
+
+Import as `whisper_subtitler.modules…`. The console script is:
+
+```text
+whisper-subtitler = whisper_subtitler.modules.cli:main
+```
+
+## Just recipes
+
+| Recipe | Purpose |
+|--------|---------|
+| `just sync` | Install all dependency groups |
+| `just lock` | Refresh the lockfile |
+| `just test` | Run pytest |
+| `just lint` | Ruff check + format check |
+| `just fmt` | Auto-fix with Ruff |
+| `just typecheck` | basedpyright |
+| `just check` | lint + typecheck + tests |
+| `just run *args` | `uv run whisper-subtitler …` |
+| `just docs` | `mkdocs build -s` |
+| `just clean` | Remove caches/build artifacts |
+
+## Tests and tox
+
+```bash
+just test
+just check
+uv run tox    # py311, py312, py313
+```
+
+## Docs
+
+Published pages are under `docs/` (see `mkdocs.yml`). Historical Memory Bank / design notes live in `docs/archive/` and are not the source of truth.
+
+```bash
+just docs
+```
+
+## Version
+
+The package version is defined once in `whisper_subtitler/version.py` and exposed via:
+
+```bash
+uv run whisper-subtitler version
+```

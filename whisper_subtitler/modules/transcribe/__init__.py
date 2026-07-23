@@ -2,9 +2,15 @@
 Transcription module.
 
 This package handles audio transcription using
-OpenAI's Whisper models.
+faster-whisper (CTranslate2 Whisper models).
 """
 
-from .transcriber import Transcriber
+from .transcriber import SUPPORTED_MODELS, Transcriber, resolve_compute_type, resolve_device, resolve_model_name
 
-__all__ = ["Transcriber"]
+__all__ = [
+    "SUPPORTED_MODELS",
+    "Transcriber",
+    "resolve_compute_type",
+    "resolve_device",
+    "resolve_model_name",
+]

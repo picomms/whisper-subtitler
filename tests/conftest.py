@@ -59,19 +59,29 @@ def mock_config():
         def __init__(self):
             self.model_size = "tiny"
             self.language = "en"
-            self.output_formats = ["txt", "srt", "vtt", "ttml"]
+            self.output_formats = ["json"]
             self.num_speakers = None
             self.huggingface_token = "mock-token"
             self.use_cuda = False
+            self.device = "cpu"
+            self.compute_type = None
+            self.beam_size = 5
+            self.best_of = 5
+            self.temperature = 0.0
+            self.initial_prompt = None
             self.verbose = False
             self.input_file = "mock_input.mp4"
             self.output_dir = "mock_output"
-            self.preprocess_audio = False
-            self.cluster_speakers = False
-            self.optimize_num_speakers = False
             self.force_overwrite = False
             self.log_level = "INFO"
             self.log_file = None
+            self.skip_diarization = False
+            self.min_speakers = None
+            self.max_speakers = None
+            self.ttml_title = "Transcription"
+            self.ttml_language = "en-GB"
+            self.audio_sample_rate = "16000"
+            self.audio_channels = "1"
 
         def get(self, key, default=None):
             return getattr(self, key, default)

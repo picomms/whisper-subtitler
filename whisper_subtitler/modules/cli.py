@@ -17,25 +17,35 @@ from .logger import setup_logging
 # Set up a module-level logger that will be initialized properly later
 logger = logging.getLogger(__name__)
 
+ALL_OUTPUT_FORMATS = ["json", "txt", "srt", "vtt", "ttml"]
+
 
 def main():
     """Entry point for the CLI."""
     global logger  # Use global logger in this function
 
-    parser = argparse.ArgumentParser(description="Transcribe and diarize videos with OpenAI's Whisper and Pyannote")
+    parser = argparse.ArgumentParser(
+        description="Transcribe and diarize audio or video with faster-whisper and Pyannote"
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
 
     # Transcribe command
-    transcribe_parser = subparsers.add_parser("transcribe", help="Transcribe video file")
-    transcribe_parser.add_argument("input_file", type=str, help="Input video file to transcribe")
+    transcribe_parser = subparsers.add_parser(
+        "transcribe", help="Transcribe an audio/video file or a directory of media files"
+    )
+    transcribe_parser.add_argument(
+        "input_file",
+        type=str,
+        help="Input audio/video file or directory of media files (e.g. mp3, wav, mp4)",
+    )
     transcribe_parser.add_argument(
         "-o",
         "--output",
         dest="output_dir",
         type=str,
-        help="Output directory for generated files (defaults to input file directory)",
+        help="Output directory for generated files (defaults to the input file's directory, or the input directory itself)",
     )
 
     # Whisper model configuration
@@ -43,9 +53,24 @@ def main():
         "-m",
         "--model",
         dest="model_size",
-        choices=["tiny", "base", "small", "medium", "large"],
+        choices=[
+            "tiny",
+            "tiny.en",
+            "base",
+            "base.en",
+            "small",
+            "small.en",
+            "medium",
+            "medium.en",
+            "large",
+            "large-v1",
+            "large-v2",
+            "large-v3",
+            "turbo",
+            "distil-large-v3",
+        ],
         default=None,
-        help="Whisper model size to use (defaults to value in .env or 'medium')",
+        help="Whisper model size (faster-whisper; default: large-v3 or .env)",
     )
     transcribe_parser.add_argument(
         "-l",
@@ -54,48 +79,6 @@ def main():
         type=str,
         default=None,
         help="Language code for transcription (empty, 'auto', or None for auto-detection)",
-    )
-    transcribe_parser.add_argument(
-        "--beam-size",
-        dest="beam_size",
-        type=int,
-        help="Beam size for Whisper (default: 5)",
-    )
-    transcribe_parser.add_argument(
-        "--best-of",
-        dest="best_of",
-        type=int,
-        help="Number of candidates for Whisper (default: 5)",
-    )
-    transcribe_parser.add_argument(
-        "--temperature",
-        dest="temperature",
-        type=float,
-        help="Temperature for Whisper sampling (default: 0.0)",
-    )
-    transcribe_parser.add_argument(
-        "--initial-prompt",
-        dest="initial_prompt",
-        type=str,
-        help="Initial prompt to guide Whisper transcription",
-    )
-    transcribe_parser.add_argument(
-        "--auto-model",
-        dest="auto_model_selection",
-        action="store_true",
-        help="Automatically select optimal model based on audio",
-    )
-    transcribe_parser.add_argument(
-        "--model-criteria",
-        dest="model_selection_criteria",
-        choices=["accuracy", "speed", "balanced"],
-        help="Criteria for auto model selection (default: balanced)",
-    )
-    transcribe_parser.add_argument(
-        "--optimize-audio",
-        dest="optimize_for_audio",
-        action="store_true",
-        help="Optimize transcription parameters based on audio characteristics",
     )
 
     # Speaker configuration
@@ -108,87 +91,46 @@ def main():
     transcribe_parser.add_argument(
         "--max-speakers", dest="max_speakers", type=int, help="Maximum number of speakers to detect"
     )
-    transcribe_parser.add_argument(
-        "--similarity-threshold",
-        dest="similarity_threshold",
-        type=float,
-        help="Threshold for speaker clustering (0.0-1.0, default: 0.85)",
-    )
 
     # Output options
     transcribe_parser.add_argument(
         "-f",
         "--format",
         dest="formats",
-        choices=["txt", "srt", "vtt", "ttml", "all"],
+        choices=["json", "txt", "srt", "vtt", "ttml", "all"],
         nargs="+",
         default=None,
-        help="Output formats to generate (defaults to all formats)",
-    )
-
-    # Audio processing options
-    transcribe_parser.add_argument(
-        "--normalize-audio",
-        dest="audio_normalization",
-        action="store_true",
-        help="Normalize audio volume for better transcription",
-    )
-    transcribe_parser.add_argument(
-        "--reduce-noise",
-        dest="noise_reduction",
-        action="store_true",
-        help="Apply noise reduction to audio",
-    )
-    transcribe_parser.add_argument(
-        "--high-pass",
-        dest="high_pass_filter",
-        action="store_true",
-        help="Apply high-pass filter to reduce low frequency noise",
-    )
-    transcribe_parser.add_argument(
-        "--cutoff",
-        dest="high_pass_cutoff",
-        type=int,
-        help="High-pass filter cutoff frequency in Hz (default: 80)",
+        help="Output formats to generate (default: json)",
     )
 
     # General options
     transcribe_parser.add_argument("-v", "--verbose", dest="verbose", action="store_true", help="Enable verbose output")
     transcribe_parser.add_argument(
-        "--cpu", dest="use_cuda", action="store_false", default=None, help="Force CPU only mode (no CUDA)"
+        "--device",
+        dest="device",
+        choices=["auto", "cpu", "cuda"],
+        default=None,
+        help="Inference device (default: auto — CUDA if available, else CPU)",
+    )
+    transcribe_parser.add_argument(
+        "--cpu",
+        dest="use_cuda",
+        action="store_false",
+        default=None,
+        help="Force CPU only mode (alias for --device cpu)",
+    )
+    transcribe_parser.add_argument(
+        "--compute-type",
+        dest="compute_type",
+        type=str,
+        default=None,
+        help="faster-whisper compute type (default: int8 on CPU, float16 on CUDA)",
     )
     transcribe_parser.add_argument(
         "--no-diarization",
         dest="skip_diarization",
         action="store_true",
         help="Skip speaker diarization (transcription only)",
-    )
-    transcribe_parser.add_argument(
-        "--preprocess", dest="preprocess_audio", action="store_true", help="Preprocess audio for improved diarization"
-    )
-    transcribe_parser.add_argument(
-        "--cluster",
-        dest="cluster_speakers",
-        action="store_true",
-        help="Enable speaker clustering for improved consistency",
-    )
-    transcribe_parser.add_argument(
-        "--optimize-speakers",
-        dest="optimize_num_speakers",
-        action="store_true",
-        help="Optimize speaker count when number of speakers is known",
-    )
-    transcribe_parser.add_argument(
-        "--voice-activity",
-        dest="voice_activity_detection",
-        action="store_true",
-        help="Use voice activity detection for better speaker segments",
-    )
-    transcribe_parser.add_argument(
-        "--min-silence",
-        dest="min_silence_duration",
-        type=float,
-        help="Minimum silence duration in seconds (default: 0.3)",
     )
     transcribe_parser.add_argument(
         "--force", dest="force_overwrite", action="store_true", help="Force overwrite existing output files"
@@ -211,18 +153,14 @@ def main():
     transcribe_parser.add_argument("--log-file", dest="log_file", type=str, help="Path to log file")
 
     # Version command
-    version_parser = subparsers.add_parser("version", help="Show version information")
+    subparsers.add_parser("version", help="Show version information")
 
     # Parse arguments
     args = parser.parse_args()
 
     # Handle version command
     if args.command == "version":
-        try:
-            from ..version import VERSION
-        except ImportError:
-            # Try direct import for when running directly
-            from version import VERSION
+        from ..version import VERSION
 
         print(f"whisper-subtitler version {VERSION}")
         return 0
@@ -259,17 +197,17 @@ def main():
             # Process formats - only override if explicitly specified
             if args.formats:
                 if "all" in args.formats:
-                    output_formats = ["txt", "srt", "vtt", "ttml"]
+                    output_formats = list(ALL_OUTPUT_FORMATS)
                 else:
                     output_formats = args.formats
-                # Override the config
                 config.output_formats = output_formats
 
-            # Default output directory to same directory as input file if not specified
+            # Default output directory: input dir itself if batching a directory,
+            # otherwise the parent of the input file.
             input_path = Path(args.input_file)
             output_dir = args.output_dir
             if not output_dir:
-                output_dir = str(input_path.parent)
+                output_dir = str(input_path) if input_path.is_dir() else str(input_path.parent)
 
             # Convert language = "" or "auto" to None for auto-detection
             language = args.language
@@ -293,50 +231,23 @@ def main():
                 cli_args["min_speakers"] = args.min_speakers
             if args.max_speakers is not None:
                 cli_args["max_speakers"] = args.max_speakers
-            if args.similarity_threshold is not None:
-                cli_args["similarity_threshold"] = args.similarity_threshold
-            if args.beam_size is not None:
-                cli_args["beam_size"] = args.beam_size
-            if args.best_of is not None:
-                cli_args["best_of"] = args.best_of
-            if args.temperature is not None:
-                cli_args["temperature"] = args.temperature
-            if args.initial_prompt is not None:
-                cli_args["initial_prompt"] = args.initial_prompt
-            if args.high_pass_cutoff is not None:
-                cli_args["high_pass_cutoff"] = args.high_pass_cutoff
-            if args.min_silence_duration is not None:
-                cli_args["min_silence_duration"] = args.min_silence_duration
-            if args.model_selection_criteria is not None:
-                cli_args["model_selection_criteria"] = args.model_selection_criteria
 
-            # Boolean flags
+            # Boolean / optional flags
             if args.verbose:
                 cli_args["verbose"] = args.verbose
-            if args.use_cuda is not None:
+            if getattr(args, "device", None) is not None:
+                cli_args["device"] = args.device
+            elif args.use_cuda is not None:
+                # --cpu sets use_cuda False
                 cli_args["use_cuda"] = args.use_cuda
+                if not args.use_cuda:
+                    cli_args["device"] = "cpu"
+            if getattr(args, "compute_type", None) is not None:
+                cli_args["compute_type"] = args.compute_type
             if args.skip_diarization:
                 cli_args["skip_diarization"] = args.skip_diarization
-            if args.preprocess_audio:
-                cli_args["preprocess_audio"] = args.preprocess_audio
-            if args.cluster_speakers:
-                cli_args["cluster_speakers"] = args.cluster_speakers
-            if args.optimize_num_speakers:
-                cli_args["optimize_num_speakers"] = args.optimize_num_speakers
             if args.force_overwrite:
                 cli_args["force_overwrite"] = args.force_overwrite
-            if args.auto_model_selection:
-                cli_args["auto_model_selection"] = args.auto_model_selection
-            if args.optimize_for_audio:
-                cli_args["optimize_for_audio"] = args.optimize_for_audio
-            if args.audio_normalization:
-                cli_args["audio_normalization"] = args.audio_normalization
-            if args.noise_reduction:
-                cli_args["noise_reduction"] = args.noise_reduction
-            if args.high_pass_filter:
-                cli_args["high_pass_filter"] = args.high_pass_filter
-            if args.voice_activity_detection:
-                cli_args["voice_activity_detection"] = args.voice_activity_detection
 
             # Other fields
             if args.huggingface_token:
@@ -350,11 +261,12 @@ def main():
             config.load_from_args(cli_args)
 
             # Set up logging
-            log_handler = setup_logging(config)
+            setup_logging(config)
             logger = logging.getLogger(__name__)
 
             logger.info(f"Processing {args.input_file}")
             logger.info(f"Using model: {config.model_size}")
+            logger.info(f"Output formats: {', '.join(config.output_formats)}")
             if config.skip_diarization:
                 logger.info("Speaker diarization is disabled")
             elif config.huggingface_token:
@@ -364,14 +276,29 @@ def main():
             logger.debug(f"Model size from CLI: {args.model_size}")
             logger.debug(f"Model size in config: {config.model_size}")
 
-            # Create and run the application
+            # Create and run the application (single file or sequential directory batch)
             app = Application(config)
-            output_files = app.process()
+            batch = app.process()
+            results = batch.get("results", {})
+            failures = batch.get("failures", {})
 
-            # Print output file paths
-            print("\nOutput files:")
-            for fmt, path in output_files.items():
-                print(f"  {fmt.upper()}: {path}")
+            if results:
+                print("\nOutput files:")
+                for input_path_str, output_files in results.items():
+                    if len(results) > 1 or failures:
+                        print(f"\n  {input_path_str}:")
+                        indent = "    "
+                    else:
+                        indent = "  "
+                    for fmt, path in output_files.items():
+                        print(f"{indent}{fmt.upper()}: {path}")
+
+            if failures:
+                print("\nFailures:")
+                for input_path_str, error in failures.items():
+                    print(f"  {input_path_str}: {error}")
+                print(f"\nCompleted with {len(failures)} failure(s), {len(results)} success(es).")
+                return 1
 
             print("\nProcessing complete!")
             return 0

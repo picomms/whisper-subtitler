@@ -1,14 +1,21 @@
 site_name: whisper-subtitler
 repo_url: https://github.com/picommcapp/whisper-subtitler
 site_url: https://picommcapp.github.io/whisper-subtitler
-site_description: LLM subtitle generator
+site_description: Automatic subtitles with faster-whisper and pyannote speaker diarization
 site_author: Dominic Capparelli
 edit_uri: edit/main/docs/
 repo_name: picommcapp/whisper-subtitler
 copyright: Maintained by <a href="https://picommcapp.com">picommcapp</a>.
 
+exclude_docs: |
+  archive/**
+
 nav:
   - Home: index.md
+  - Installation: installation.md
+  - Usage: usage.md
+  - FAQ: faq.md
+  - Development: development.md
   - Modules: modules.md
 plugins:
   - search
