@@ -5,7 +5,23 @@ Tests for the speaker diarization module (pyannote 3.1).
 import logging
 from unittest.mock import MagicMock, patch
 
-from whisper_subtitler.modules.diarisation.diarizer import PIPELINE_MODEL, Diarizer
+from whisper_subtitler.modules.diarisation.diarizer import PIPELINE_MODEL, Diarizer, pipeline_auth_kwargs
+
+
+class TestPipelineAuthKwargs:
+    def test_prefers_use_auth_token_when_only_that_exists(self):
+        with patch(
+            "whisper_subtitler.modules.diarisation.diarizer.inspect.signature",
+            return_value=MagicMock(parameters={"checkpoint_path": None, "use_auth_token": None}),
+        ):
+            assert pipeline_auth_kwargs("hf_x") == {"use_auth_token": "hf_x"}
+
+    def test_uses_token_when_available(self):
+        with patch(
+            "whisper_subtitler.modules.diarisation.diarizer.inspect.signature",
+            return_value=MagicMock(parameters={"checkpoint": None, "token": None}),
+        ):
+            assert pipeline_auth_kwargs("hf_x") == {"token": "hf_x"}
 
 
 class TestDiarizer:
@@ -20,8 +36,9 @@ class TestDiarizer:
         assert diarizer.huggingface_token == mock_config.huggingface_token
         assert diarizer.device == "cpu"
 
+    @patch("whisper_subtitler.modules.diarisation.diarizer.pipeline_auth_kwargs", return_value={"use_auth_token": "mock-token"})
     @patch("whisper_subtitler.modules.diarisation.diarizer.Pipeline.from_pretrained")
-    def test_initialize_pipeline_uses_3_1_and_token(self, mock_from_pretrained, mock_config):
+    def test_initialize_pipeline_uses_3_1_and_token(self, mock_from_pretrained, mock_auth_kwargs, mock_config):
         mock_pipeline = MagicMock()
         mock_from_pretrained.return_value = mock_pipeline
 
@@ -29,9 +46,10 @@ class TestDiarizer:
         pipeline = diarizer.initialize_pipeline()
 
         assert pipeline == mock_pipeline
+        mock_auth_kwargs.assert_called_once_with(mock_config.huggingface_token)
         mock_from_pretrained.assert_called_once_with(
             PIPELINE_MODEL,
-            token=mock_config.huggingface_token,
+            use_auth_token=mock_config.huggingface_token,
         )
         mock_pipeline.to.assert_not_called()
 

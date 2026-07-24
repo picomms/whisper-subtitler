@@ -15,6 +15,34 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+# Default temperature fallback sequence (enables compression-ratio / log-prob retries)
+DEFAULT_TEMPERATURE: list[float] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+
+
+def parse_temperature(value: str) -> float | list[float]:
+    """Parse a temperature env/config value as a single float or comma-separated list."""
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("empty temperature value")
+    temps = [float(p) for p in parts]
+    if len(temps) == 1:
+        return temps[0]
+    return temps
+
+
+def _env_truthy(value: str | None, default: bool) -> bool:
+    """Parse a boolean env value; fall back to default when unset."""
+    if value is None:
+        return default
+    return value.lower() in ("1", "true", "yes")
+
+
+def _parse_optional_float(raw: str | None) -> float | None:
+    """Parse an optional float; empty/none/null → None."""
+    if raw is None or raw.strip() == "" or raw.strip().lower() in ("none", "null"):
+        return None
+    return float(raw)
+
 
 class Config:
     """Configuration manager for whisper-subtitler.
@@ -33,8 +61,20 @@ class Config:
         self.language: str | None = "en"  # Language code or None for auto-detection
         self.beam_size: int = 5  # Beam search width
         self.best_of: int = 5  # Number of samples for beam search
-        self.temperature: float = 0.0  # Temperature for sampling
+        # Temperature fallback list enables compression-ratio / log-prob retries
+        self.temperature: float | list[float] = list(DEFAULT_TEMPERATURE)
         self.initial_prompt: str | None = None  # Initial prompt for transcription
+        # Anti-hallucination / decoding knobs
+        self.condition_on_previous_text: bool = False
+        self.vad_filter: bool = True
+        self.compression_ratio_threshold: float = 2.4
+        self.log_prob_threshold: float = -1.0
+        self.no_speech_threshold: float = 0.6
+        self.repetition_penalty: float = 1.0
+        self.no_repeat_ngram_size: int = 0
+        self.hallucination_silence_threshold: float | None = None
+        self.vad_min_silence_duration_ms: int | None = None
+        self.vad_speech_pad_ms: int | None = None
         # Device: "auto" | "cpu" | "cuda" — CPU is first-class; CUDA optional
         self.device: str = "auto"
         self.compute_type: str | None = None  # None → int8 (cpu) / float16 (cuda)
@@ -119,11 +159,80 @@ class Config:
 
         if "WHISPER_TEMPERATURE" in os.environ:
             try:
-                self.temperature = float(os.environ.get("WHISPER_TEMPERATURE", self.temperature))
+                self.temperature = parse_temperature(os.environ["WHISPER_TEMPERATURE"])
             except ValueError:
                 logger.warning("Invalid WHISPER_TEMPERATURE value in environment, ignoring")
 
         self.initial_prompt = os.environ.get("WHISPER_INITIAL_PROMPT", self.initial_prompt)
+        # Empty string means no prompt
+        if self.initial_prompt == "":
+            self.initial_prompt = None
+
+        if "WHISPER_CONDITION_ON_PREVIOUS_TEXT" in os.environ:
+            self.condition_on_previous_text = _env_truthy(
+                os.environ.get("WHISPER_CONDITION_ON_PREVIOUS_TEXT"),
+                self.condition_on_previous_text,
+            )
+        if "WHISPER_VAD_FILTER" in os.environ:
+            self.vad_filter = _env_truthy(os.environ.get("WHISPER_VAD_FILTER"), self.vad_filter)
+
+        if "WHISPER_COMPRESSION_RATIO_THRESHOLD" in os.environ:
+            try:
+                self.compression_ratio_threshold = float(os.environ["WHISPER_COMPRESSION_RATIO_THRESHOLD"])
+            except ValueError:
+                logger.warning("Invalid WHISPER_COMPRESSION_RATIO_THRESHOLD value in environment, ignoring")
+
+        if "WHISPER_LOG_PROB_THRESHOLD" in os.environ:
+            try:
+                self.log_prob_threshold = float(os.environ["WHISPER_LOG_PROB_THRESHOLD"])
+            except ValueError:
+                logger.warning("Invalid WHISPER_LOG_PROB_THRESHOLD value in environment, ignoring")
+
+        if "WHISPER_NO_SPEECH_THRESHOLD" in os.environ:
+            try:
+                self.no_speech_threshold = float(os.environ["WHISPER_NO_SPEECH_THRESHOLD"])
+            except ValueError:
+                logger.warning("Invalid WHISPER_NO_SPEECH_THRESHOLD value in environment, ignoring")
+
+        if "WHISPER_REPETITION_PENALTY" in os.environ:
+            try:
+                self.repetition_penalty = float(os.environ["WHISPER_REPETITION_PENALTY"])
+            except ValueError:
+                logger.warning("Invalid WHISPER_REPETITION_PENALTY value in environment, ignoring")
+
+        if "WHISPER_NO_REPEAT_NGRAM_SIZE" in os.environ:
+            try:
+                self.no_repeat_ngram_size = int(os.environ["WHISPER_NO_REPEAT_NGRAM_SIZE"])
+            except ValueError:
+                logger.warning("Invalid WHISPER_NO_REPEAT_NGRAM_SIZE value in environment, ignoring")
+
+        if "WHISPER_HALLUCINATION_SILENCE_THRESHOLD" in os.environ:
+            try:
+                self.hallucination_silence_threshold = _parse_optional_float(
+                    os.environ.get("WHISPER_HALLUCINATION_SILENCE_THRESHOLD")
+                )
+            except ValueError:
+                logger.warning("Invalid WHISPER_HALLUCINATION_SILENCE_THRESHOLD value in environment, ignoring")
+
+        if "WHISPER_VAD_MIN_SILENCE_DURATION_MS" in os.environ:
+            raw = os.environ.get("WHISPER_VAD_MIN_SILENCE_DURATION_MS", "").strip()
+            if raw == "" or raw.lower() in ("none", "null"):
+                self.vad_min_silence_duration_ms = None
+            else:
+                try:
+                    self.vad_min_silence_duration_ms = int(raw)
+                except ValueError:
+                    logger.warning("Invalid WHISPER_VAD_MIN_SILENCE_DURATION_MS value in environment, ignoring")
+
+        if "WHISPER_VAD_SPEECH_PAD_MS" in os.environ:
+            raw = os.environ.get("WHISPER_VAD_SPEECH_PAD_MS", "").strip()
+            if raw == "" or raw.lower() in ("none", "null"):
+                self.vad_speech_pad_ms = None
+            else:
+                try:
+                    self.vad_speech_pad_ms = int(raw)
+                except ValueError:
+                    logger.warning("Invalid WHISPER_VAD_SPEECH_PAD_MS value in environment, ignoring")
 
         # Diarization settings
         self.huggingface_token = os.environ.get("HUGGINGFACE_TOKEN", self.huggingface_token)
@@ -249,7 +358,12 @@ class Config:
                     # Convert string values to appropriate types
                     if hasattr(self, key):
                         current_value = getattr(self, key)
-                        if value.lower() in ["true", "yes", "1"]:
+                        if key == "temperature":
+                            try:
+                                setattr(self, key, parse_temperature(value))
+                            except ValueError:
+                                logger.warning(f"Invalid temperature value: {value}")
+                        elif value.lower() in ["true", "yes", "1"]:
                             setattr(self, key, True)
                         elif value.lower() in ["false", "no", "0"]:
                             setattr(self, key, False)
@@ -260,6 +374,11 @@ class Config:
                                 setattr(self, key, int(value))
                             except ValueError:
                                 logger.warning(f"Invalid integer value for {key}: {value}")
+                        elif isinstance(current_value, float):
+                            try:
+                                setattr(self, key, float(value))
+                            except ValueError:
+                                logger.warning(f"Invalid float value for {key}: {value}")
                         elif isinstance(current_value, list):
                             setattr(self, key, value.split(","))
                         else:

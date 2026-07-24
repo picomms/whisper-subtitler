@@ -319,3 +319,79 @@ class TestRealConfig:
             config.validate()
 
         assert "num_speakers is set; min_speakers/max_speakers will be ignored" in caplog.text
+
+    def test_anti_hallucination_defaults(self):
+        config = Config()
+        assert config.condition_on_previous_text is False
+        assert config.vad_filter is True
+        assert config.temperature == [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        assert config.compression_ratio_threshold == 2.4
+        assert config.log_prob_threshold == -1.0
+        assert config.no_speech_threshold == 0.6
+        assert config.repetition_penalty == 1.0
+        assert config.no_repeat_ngram_size == 0
+        assert config.hallucination_silence_threshold is None
+        assert config.vad_min_silence_duration_ms is None
+        assert config.vad_speech_pad_ms is None
+
+    def test_parse_temperature_helper(self):
+        from whisper_subtitler.modules.config import parse_temperature
+
+        assert parse_temperature("0.0") == 0.0
+        assert parse_temperature("0.0,0.2,0.4") == [0.0, 0.2, 0.4]
+
+    def test_env_loads_anti_hallucination_knobs(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("WHISPER_TEMPERATURE", "0.0,0.2,0.4")
+        monkeypatch.setenv("WHISPER_CONDITION_ON_PREVIOUS_TEXT", "true")
+        monkeypatch.setenv("WHISPER_VAD_FILTER", "false")
+        monkeypatch.setenv("WHISPER_COMPRESSION_RATIO_THRESHOLD", "2.0")
+        monkeypatch.setenv("WHISPER_LOG_PROB_THRESHOLD", "-0.5")
+        monkeypatch.setenv("WHISPER_NO_SPEECH_THRESHOLD", "0.7")
+        monkeypatch.setenv("WHISPER_REPETITION_PENALTY", "1.2")
+        monkeypatch.setenv("WHISPER_NO_REPEAT_NGRAM_SIZE", "3")
+        monkeypatch.setenv("WHISPER_HALLUCINATION_SILENCE_THRESHOLD", "2.0")
+        monkeypatch.setenv("WHISPER_VAD_MIN_SILENCE_DURATION_MS", "500")
+        monkeypatch.setenv("WHISPER_VAD_SPEECH_PAD_MS", "200")
+        empty_env = tmp_path / "empty.env"
+        empty_env.write_text("")
+
+        config = Config().load_from_env(env_file=str(empty_env))
+
+        assert config.temperature == [0.0, 0.2, 0.4]
+        assert config.condition_on_previous_text is True
+        assert config.vad_filter is False
+        assert config.compression_ratio_threshold == 2.0
+        assert config.log_prob_threshold == -0.5
+        assert config.no_speech_threshold == 0.7
+        assert config.repetition_penalty == 1.2
+        assert config.no_repeat_ngram_size == 3
+        assert config.hallucination_silence_threshold == 2.0
+        assert config.vad_min_silence_duration_ms == 500
+        assert config.vad_speech_pad_ms == 200
+
+    def test_env_temperature_single_float(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("WHISPER_TEMPERATURE", "0.0")
+        empty_env = tmp_path / "empty.env"
+        empty_env.write_text("")
+
+        config = Config().load_from_env(env_file=str(empty_env))
+
+        assert config.temperature == 0.0
+
+    def test_env_hallucination_silence_empty_is_none(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("WHISPER_HALLUCINATION_SILENCE_THRESHOLD", "")
+        empty_env = tmp_path / "empty.env"
+        empty_env.write_text("")
+
+        config = Config().load_from_env(env_file=str(empty_env))
+
+        assert config.hallucination_silence_threshold is None
+
+    def test_file_loads_temperature_list(self, tmp_path):
+        config_file = tmp_path / "settings.conf"
+        config_file.write_text("temperature = 0.0,0.2,0.4\ncondition_on_previous_text = false\n")
+
+        config = Config().load_from_file(str(config_file))
+
+        assert config.temperature == [0.0, 0.2, 0.4]
+        assert config.condition_on_previous_text is False

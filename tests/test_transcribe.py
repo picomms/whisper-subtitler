@@ -116,6 +116,76 @@ class TestTranscriber:
         assert call_kwargs[1]["language"] == "en"
         assert "log_progress" in call_kwargs[1]
 
+    @patch("whisper_subtitler.modules.transcribe.transcriber.WhisperModel")
+    def test_transcribe_passes_anti_hallucination_options(
+        self, mock_whisper_model_cls, mock_config, sample_audio_file
+    ):
+        mock_config.device = "cpu"
+        mock_config.compute_type = None
+        mock_config.model_size = "tiny"
+        mock_config.language = "en"
+        mock_config.temperature = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        mock_config.condition_on_previous_text = False
+        mock_config.vad_filter = True
+        mock_config.compression_ratio_threshold = 2.4
+        mock_config.log_prob_threshold = -1.0
+        mock_config.no_speech_threshold = 0.6
+        mock_config.repetition_penalty = 1.1
+        mock_config.no_repeat_ngram_size = 2
+        mock_config.hallucination_silence_threshold = 1.5
+        mock_config.vad_min_silence_duration_ms = 400
+        mock_config.vad_speech_pad_ms = 100
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = (
+            iter([]),
+            SimpleNamespace(language="en", language_probability=0.9),
+        )
+        mock_whisper_model_cls.return_value = mock_model
+
+        Transcriber(mock_config).transcribe(str(sample_audio_file))
+
+        kwargs = mock_model.transcribe.call_args[1]
+        assert kwargs["temperature"] == [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        assert kwargs["condition_on_previous_text"] is False
+        assert kwargs["vad_filter"] is True
+        assert kwargs["compression_ratio_threshold"] == 2.4
+        assert kwargs["log_prob_threshold"] == -1.0
+        assert kwargs["no_speech_threshold"] == 0.6
+        assert kwargs["repetition_penalty"] == 1.1
+        assert kwargs["no_repeat_ngram_size"] == 2
+        assert kwargs["hallucination_silence_threshold"] == 1.5
+        assert kwargs["vad_parameters"] == {
+            "min_silence_duration_ms": 400,
+            "speech_pad_ms": 100,
+        }
+
+    @patch("whisper_subtitler.modules.transcribe.transcriber.WhisperModel")
+    def test_transcribe_omits_vad_parameters_when_unset(
+        self, mock_whisper_model_cls, mock_config, sample_audio_file
+    ):
+        mock_config.device = "cpu"
+        mock_config.compute_type = None
+        mock_config.model_size = "tiny"
+        mock_config.language = "en"
+        mock_config.vad_filter = True
+        mock_config.vad_min_silence_duration_ms = None
+        mock_config.vad_speech_pad_ms = None
+        mock_config.hallucination_silence_threshold = None
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = (
+            iter([]),
+            SimpleNamespace(language="en", language_probability=0.9),
+        )
+        mock_whisper_model_cls.return_value = mock_model
+
+        Transcriber(mock_config).transcribe(str(sample_audio_file))
+
+        kwargs = mock_model.transcribe.call_args[1]
+        assert "vad_parameters" not in kwargs
+        assert "hallucination_silence_threshold" not in kwargs
+
     @patch("whisper_subtitler.modules.transcribe.transcriber.sys.stderr")
     @patch("whisper_subtitler.modules.transcribe.transcriber.WhisperModel")
     def test_transcribe_log_progress_false_when_not_tty(

@@ -129,8 +129,18 @@ Common keys (see `.env.sample` for the full list):
 | `WHISPER_LANGUAGE` | Language code or empty/`auto` |
 | `WHISPER_DEVICE` | `auto` / `cpu` / `cuda` |
 | `WHISPER_COMPUTE_TYPE` | Optional; defaults by device |
+| `WHISPER_TEMPERATURE` | Single float or comma list; default `0.0,0.2,...,1.0` |
+| `WHISPER_CONDITION_ON_PREVIOUS_TEXT` | Default `false` (reduces repetition loops) |
+| `WHISPER_VAD_FILTER` | Default `true` (drop non-speech) |
+| `WHISPER_COMPRESSION_RATIO_THRESHOLD` | Default `2.4` |
+| `WHISPER_LOG_PROB_THRESHOLD` | Default `-1.0` |
+| `WHISPER_NO_SPEECH_THRESHOLD` | Default `0.6` |
+| `WHISPER_REPETITION_PENALTY` | Default `1.0` |
+| `WHISPER_NO_REPEAT_NGRAM_SIZE` | Default `0` (off) |
+| `WHISPER_HALLUCINATION_SILENCE_THRESHOLD` | Optional; empty disables |
+| `WHISPER_VAD_MIN_SILENCE_DURATION_MS` / `WHISPER_VAD_SPEECH_PAD_MS` | Optional VAD overrides |
 | `SKIP_DIARIZATION` | `true` to skip diarization |
 | `NUM_SPEAKERS` / `MIN_SPEAKERS` / `MAX_SPEAKERS` | Speaker constraints |
 | `OUTPUT_FORMATS` | Comma-separated; default `json` |
 
-Whisper decoding knobs such as `WHISPER_BEAM_SIZE` remain available via env/config only (not first-class CLI flags).
+Whisper decoding knobs such as `WHISPER_BEAM_SIZE` and the anti-hallucination settings above remain available via env/config only (not first-class CLI flags).

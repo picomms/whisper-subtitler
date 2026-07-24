@@ -7,6 +7,7 @@ bounds passed directly to the pipeline.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import torch
@@ -16,6 +17,18 @@ from ..logger import get_logger
 from ..transcribe.transcriber import resolve_device
 
 PIPELINE_MODEL = "pyannote/speaker-diarization-3.1"
+
+
+def pipeline_auth_kwargs(token: str | None) -> dict[str, Any]:
+    """Build auth kwargs compatible with pyannote 3.x (`use_auth_token`) and 4.x (`token`)."""
+    try:
+        params = inspect.signature(Pipeline.from_pretrained).parameters
+    except (TypeError, ValueError):
+        params = {}
+    # Prefer the parameter the installed version actually accepts.
+    if "use_auth_token" in params and "token" not in params:
+        return {"use_auth_token": token}
+    return {"token": token}
 
 
 class Diarizer:
@@ -51,9 +64,10 @@ class Diarizer:
             self.logger.info(f"Initializing speaker diarization pipeline: {PIPELINE_MODEL}")
 
             try:
+                auth_kwargs = pipeline_auth_kwargs(self.huggingface_token)
                 self.pipeline = Pipeline.from_pretrained(
                     PIPELINE_MODEL,
-                    token=self.huggingface_token,
+                    **auth_kwargs,
                 )
 
                 if self.device == "cuda":

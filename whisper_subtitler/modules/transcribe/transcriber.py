@@ -79,35 +79,6 @@ def resolve_compute_type(config, device: str) -> str:
     except Exception:
         supported = None
 
-    # #region agent log
-    try:
-        import json as _json
-        import time as _time
-
-        with open("/home/cappy/code/whisper-subtitler/.cursor/debug-c34c50.log", "a") as _f:
-            _f.write(
-                _json.dumps(
-                    {
-                        "sessionId": "c34c50",
-                        "runId": "post-fix",
-                        "hypothesisId": "C",
-                        "location": "transcriber.py:resolve_compute_type",
-                        "message": "compute type resolution",
-                        "data": {
-                            "device": device,
-                            "explicit": explicit,
-                            "supported": sorted(supported) if supported is not None else None,
-                            "chosen_preview": None,
-                        },
-                        "timestamp": int(_time.time() * 1000),
-                    }
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
-
     def _first_supported() -> str:
         if supported is None:
             return preferred[0]
@@ -177,9 +148,28 @@ class Transcriber:
             "language": self.language,
             "beam_size": getattr(config, "beam_size", 5),
             "best_of": getattr(config, "best_of", 5),
-            "temperature": getattr(config, "temperature", 0.0),
+            "temperature": getattr(config, "temperature", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]),
             "initial_prompt": getattr(config, "initial_prompt", None),
+            "condition_on_previous_text": getattr(config, "condition_on_previous_text", False),
+            "vad_filter": getattr(config, "vad_filter", True),
+            "compression_ratio_threshold": getattr(config, "compression_ratio_threshold", 2.4),
+            "log_prob_threshold": getattr(config, "log_prob_threshold", -1.0),
+            "no_speech_threshold": getattr(config, "no_speech_threshold", 0.6),
+            "repetition_penalty": getattr(config, "repetition_penalty", 1.0),
+            "no_repeat_ngram_size": getattr(config, "no_repeat_ngram_size", 0),
+            "hallucination_silence_threshold": getattr(config, "hallucination_silence_threshold", None),
         }
+
+        vad_parameters: dict[str, Any] = {}
+        vad_min_silence = getattr(config, "vad_min_silence_duration_ms", None)
+        vad_speech_pad = getattr(config, "vad_speech_pad_ms", None)
+        if vad_min_silence is not None:
+            vad_parameters["min_silence_duration_ms"] = vad_min_silence
+        if vad_speech_pad is not None:
+            vad_parameters["speech_pad_ms"] = vad_speech_pad
+        if self.transcription_options.get("vad_filter") and vad_parameters:
+            self.transcription_options["vad_parameters"] = vad_parameters
+
         self.transcription_options = {k: v for k, v in self.transcription_options.items() if v is not None}
 
     def _fallback_to_cpu_after_oom(self) -> None:
@@ -195,28 +185,6 @@ class Transcriber:
             torch.cuda.empty_cache()
         except Exception:
             pass
-        # #region agent log
-        try:
-            import json as _json
-
-            with open("/home/cappy/code/whisper-subtitler/.cursor/debug-c34c50.log", "a") as _f:
-                _f.write(
-                    _json.dumps(
-                        {
-                            "sessionId": "c34c50",
-                            "runId": "post-fix",
-                            "hypothesisId": "B",
-                            "location": "transcriber.py:_fallback_to_cpu_after_oom",
-                            "message": "fell back to CPU after OOM",
-                            "data": {"device": self.device, "compute_type": self.compute_type},
-                            "timestamp": int(time.time() * 1000),
-                        }
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
 
     def load_model(self) -> WhisperModel:
         """Load the faster-whisper model.
@@ -283,32 +251,6 @@ class Transcriber:
             options = self.transcription_options.copy()
             options["log_progress"] = should_log_progress(self.config)
             self.logger.debug(f"Transcription options: {options}")
-            # #region agent log
-            try:
-                import json as _json
-
-                with open("/home/cappy/code/whisper-subtitler/.cursor/debug-c34c50.log", "a") as _f:
-                    _f.write(
-                        _json.dumps(
-                            {
-                                "sessionId": "c34c50",
-                                "runId": "post-fix",
-                                "hypothesisId": "A",
-                                "location": "transcriber.py:transcribe",
-                                "message": "starting transcribe",
-                                "data": {
-                                    "device": self.device,
-                                    "compute_type": self.compute_type,
-                                    "audio": str(audio_path),
-                                },
-                                "timestamp": int(time.time() * 1000),
-                            }
-                        )
-                        + "\n"
-                    )
-            except Exception:
-                pass
-            # #endregion
             segments_gen, info = model.transcribe(str(audio_path), **options)
             segments = list(segments_gen)
             result = self._segments_to_result(segments, info)
