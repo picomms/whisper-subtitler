@@ -2,6 +2,7 @@
 Tests for the application orchestrator.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,7 +76,7 @@ class TestApplication:
 
         mock_audio_extractor.return_value.extract_audio.assert_called_once()
         mock_diarizer_instance.initialize_pipeline.assert_called_once()
-        mock_diarizer_instance.diarize.assert_called_once_with(str(temp_output_dir / "test_video.wav"))
+        mock_diarizer_instance.diarize.assert_called_once_with(str(Path("temp") / "test_video.wav"))
         mock_output_formatter.return_value.generate_outputs.assert_called_once()
         output_data = mock_output_formatter.return_value.generate_outputs.call_args[0][0]
 
@@ -125,7 +126,7 @@ class TestApplication:
     @patch("whisper_subtitler.modules.application.OutputFormatter")
     @patch("whisper_subtitler.modules.application.Transcriber")
     @patch("whisper_subtitler.modules.application.AudioExtractor")
-    def test_process_extracts_mp3_to_wav(
+    def test_process_extracts_mp3_to_temp_wav(
         self,
         mock_audio_extractor,
         mock_transcriber,
@@ -133,7 +134,7 @@ class TestApplication:
         mock_config,
         temp_output_dir,
     ):
-        """MP3 inputs are passed through to AudioExtractor targeting sibling WAV."""
+        """MP3 inputs are extracted to a temp WAV for processing."""
         mp3_path = temp_output_dir / "talk.mp3"
         mp3_path.write_bytes(b"fake-mp3")
         mock_config.input_file = str(mp3_path)
@@ -151,13 +152,13 @@ class TestApplication:
 
         mock_audio_extractor.return_value.extract_audio.assert_called_once_with(
             input_file=str(mp3_path),
-            output_file=str(temp_output_dir / "talk.wav"),
+            output_file=str(Path("temp") / "talk.wav"),
         )
 
     @patch("whisper_subtitler.modules.application.OutputFormatter")
     @patch("whisper_subtitler.modules.application.Transcriber")
     @patch("whisper_subtitler.modules.application.AudioExtractor")
-    def test_process_reconverts_same_path_wav(
+    def test_process_extracts_wav_to_temp_without_touching_source(
         self,
         mock_audio_extractor,
         mock_transcriber,
@@ -165,7 +166,7 @@ class TestApplication:
         mock_config,
         temp_output_dir,
     ):
-        """WAV input that equals the target path always triggers conversion."""
+        """WAV inputs are converted into temp/; the source file is left alone."""
         wav_path = temp_output_dir / "meeting.wav"
         wav_path.write_bytes(b"existing")
         mock_config.input_file = str(wav_path)
@@ -183,8 +184,78 @@ class TestApplication:
 
         mock_audio_extractor.return_value.extract_audio.assert_called_once_with(
             input_file=str(wav_path),
-            output_file=str(wav_path),
+            output_file=str(Path("temp") / "meeting.wav"),
         )
+        assert wav_path.read_bytes() == b"existing"
+
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_deletes_temp_wav_after_use(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
+    ):
+        """Temp WAV is removed after processing completes."""
+        mp3_path = temp_output_dir / "talk.mp3"
+        mp3_path.write_bytes(b"fake-mp3")
+        mock_config.input_file = str(mp3_path)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+
+        temp_wav = Path("temp") / "talk.wav"
+
+        def fake_extract(input_file, output_file):
+            Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_file).write_bytes(b"wav-data")
+            return Path(output_file)
+
+        mock_audio_extractor.return_value.extract_audio.side_effect = fake_extract
+        mock_transcriber.return_value.transcribe.return_value = {
+            "text": "hi",
+            "segments": [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi", "speaker": None}],
+        }
+        mock_output_formatter.return_value.generate_outputs.return_value = {"json": temp_output_dir / "talk.json"}
+
+        Application(mock_config).process()
+
+        assert not temp_wav.exists()
+
+    @patch("whisper_subtitler.modules.application.OutputFormatter")
+    @patch("whisper_subtitler.modules.application.Transcriber")
+    @patch("whisper_subtitler.modules.application.AudioExtractor")
+    def test_process_deletes_temp_wav_on_failure(
+        self,
+        mock_audio_extractor,
+        mock_transcriber,
+        mock_output_formatter,
+        mock_config,
+        temp_output_dir,
+    ):
+        """Temp WAV is removed even when a later stage fails."""
+        mp3_path = temp_output_dir / "talk.mp3"
+        mp3_path.write_bytes(b"fake-mp3")
+        mock_config.input_file = str(mp3_path)
+        mock_config.output_dir = str(temp_output_dir)
+        mock_config.skip_diarization = True
+
+        temp_wav = Path("temp") / "talk.wav"
+
+        def fake_extract(input_file, output_file):
+            Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_file).write_bytes(b"wav-data")
+            return Path(output_file)
+
+        mock_audio_extractor.return_value.extract_audio.side_effect = fake_extract
+        mock_transcriber.return_value.transcribe.side_effect = RuntimeError("boom")
+
+        batch = Application(mock_config).process()
+
+        assert str(mp3_path) in batch["failures"]
+        assert not temp_wav.exists()
 
     @pytest.mark.skip("Requires actual implementation")
     @patch("whisper_subtitler.modules.transcribe.Transcriber")

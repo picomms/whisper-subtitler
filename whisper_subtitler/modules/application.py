@@ -145,50 +145,54 @@ class Application:
         # Keep config/formatter in sync with the current file
         self.config.input_file = str(input_path)
 
-        # Determine output directory
+        # Determine output directory (transcripts/subtitles only)
         output_dir = Path(self.config.output_dir) if self.config.output_dir else input_path.parent
         output_dir.mkdir(parents=True, exist_ok=True)
 
         base_name = input_path.stem
-        audio_file = output_dir / f"{base_name}.wav"
-        same_path = input_path.resolve() == audio_file.resolve()
+        temp_dir = Path("temp")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        audio_file = temp_dir / f"{base_name}.wav"
 
-        # Always (re)convert when targeting the same WAV path so sample rate/channels
-        # match config; otherwise extract when missing or --force.
-        with timed_stage(self.logger, "Preparing audio"):
-            if same_path or not audio_file.exists() or self.config.force_overwrite:
+        try:
+            with timed_stage(self.logger, "Preparing audio"):
                 self.logger.info(f"Preparing audio at: {audio_file}")
                 self.audio_extractor.extract_audio(input_file=str(input_path), output_file=str(audio_file))
+
+            with timed_stage(self.logger, "Transcription"):
+                self.logger.debug(f"Using model size: {self.config.model_size}")
+                transcription = self.transcriber.transcribe(str(audio_file))
+
+            if self.config.skip_diarization:
+                self.logger.info("Skipping speaker diarization as requested")
+                for segment in transcription["segments"]:
+                    segment["speaker"] = "Speaker"
             else:
-                self.logger.info(f"Using existing audio file: {audio_file}")
+                with timed_stage(self.logger, "Diarization"):
+                    self.logger.info("Initializing speaker diarization pipeline")
+                    self.diarizer.initialize_pipeline()
 
-        with timed_stage(self.logger, "Transcription"):
-            self.logger.debug(f"Using model size: {self.config.model_size}")
-            transcription = self.transcriber.transcribe(str(audio_file))
+                    self.logger.info(f"Running speaker diarization on {audio_file}")
+                    speaker_segments = self.diarizer.diarize(str(audio_file))
 
-        if self.config.skip_diarization:
-            self.logger.info("Skipping speaker diarization as requested")
-            for segment in transcription["segments"]:
-                segment["speaker"] = "Speaker"
-        else:
-            with timed_stage(self.logger, "Diarization"):
-                self.logger.info("Initializing speaker diarization pipeline")
-                self.diarizer.initialize_pipeline()
+                    self.logger.info("Combining transcription and diarization results")
+                    self.logger.debug(f"Found {len(speaker_segments)} speaker segments")
+                    self.logger.debug(f"Transcription has {len(transcription['segments'])} segments")
+                    self.logger.info("Assigning speakers to transcription segments")
+                    transcription = self.diarizer.assign_speakers_to_segments(transcription, speaker_segments)
 
-                self.logger.info(f"Running speaker diarization on {audio_file}")
-                speaker_segments = self.diarizer.diarize(str(audio_file))
+            with timed_stage(self.logger, "Outputs"):
+                output_files = self.output_formatter.generate_outputs(transcription, base_name)
 
-                self.logger.info("Combining transcription and diarization results")
-                self.logger.debug(f"Found {len(speaker_segments)} speaker segments")
-                self.logger.debug(f"Transcription has {len(transcription['segments'])} segments")
-                self.logger.info("Assigning speakers to transcription segments")
-                transcription = self.diarizer.assign_speakers_to_segments(transcription, speaker_segments)
-
-        with timed_stage(self.logger, "Outputs"):
-            output_files = self.output_formatter.generate_outputs(transcription, base_name)
-
-        self.logger.info(f"Processing complete for {input_path}")
-        return output_files
+            self.logger.info(f"Processing complete for {input_path}")
+            return output_files
+        finally:
+            if audio_file.exists():
+                try:
+                    audio_file.unlink()
+                    self.logger.debug(f"Removed temporary audio file: {audio_file}")
+                except OSError as e:
+                    self.logger.warning(f"Failed to remove temporary audio file {audio_file}: {e}")
 
     def process(self) -> dict[str, dict[str, Any]]:
         """Process config.input_file (a single file or a directory of media).
